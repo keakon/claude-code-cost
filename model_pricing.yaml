@@ -1,0 +1,43 @@
+# 模型定价配置 (YAML格式)
+# 价格单位：美元/百万Token
+# 更新日期：2025-07-24
+
+pricing:
+
+  sonnet:
+    input_per_million: 3.0
+    output_per_million: 15.0
+    cache_read_per_million: 0.3     # 0.1x基础价格
+    cache_write_per_million: 3.75   # 1.25x基础价格
+
+  opus:
+    input_per_million: 15.0
+    output_per_million: 75.0
+    cache_read_per_million: 1.5     # 0.1x基础价格
+    cache_write_per_million: 18.75  # 1.25x基础价格
+
+  gemini-2.5-pro:
+    # <= 200K tokens per message 定价
+    input_per_million_low: 1.25
+    output_per_million_low: 10.0
+    # > 200K tokens per message 定价
+    input_per_million_high: 2.50
+    output_per_million_high: 15.0
+    threshold: 200000
+
+  gemini-1.5-pro:
+    input_per_million: 1.25
+    output_per_million: 5.0
+
+# 配置说明
+config_info:
+  version: "1.2"
+  last_updated: "2025-07-24"
+  sources:
+    claude: "https://docs.anthropic.com/en/docs/about-claude/pricing"
+    gemini: "https://ai.google.dev/pricing"
+  notes:
+    - "所有价格以美元/百万Token为单位"
+    - "Claude缓存价格: Cache Write = 1.25x基础价格, Cache Read = 0.1x基础价格"
+    - "Gemini 2.5 Pro使用分级定价，以200K tokens为阈值，基于单条消息的input_tokens判断"
+    - "模型匹配优先级：1)精确匹配 2)从上到下第一个包含匹配 3)未匹配时成本为0"
