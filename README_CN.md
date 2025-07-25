@@ -9,8 +9,9 @@
 ## 功能特性
 
 - **多模型支持**: 支持 Claude Sonnet、Opus、Gemini 模型，提供精确定价
-- **全面分析**: 每日使用趋势、项目排名和成本分解
+- **全面分析**: 每日使用趋势、项目排名、模型性能和成本分解
 - **智能显示**: 自动隐藏空白部分，优化长项目路径显示
+- **模型洞察**: 个别模型消耗跟踪和成本排名（使用2种以上模型时显示）
 - **数据导出**: 支持 JSON 格式导出供进一步分析
 - **时区处理**: 将 UTC 时间戳转换为本地时间，确保每日统计准确
 
@@ -51,6 +52,12 @@ python main.py --max-days 7 --max-projects 5
 # 显示所有数据
 python main.py --max-days 0 --max-projects 0
 
+# 以人民币显示成本
+python main.py --currency CNY
+
+# 使用自定义汇率
+python main.py --currency CNY --usd-to-cny 7.3
+
 # 导出到 JSON
 python main.py --export-json report.json
 
@@ -60,12 +67,13 @@ python main.py --log-level DEBUG
 
 ## 输出部分
 
-工具最多显示 4 个主要部分：
+工具最多显示 5 个主要部分：
 
 1. **总体统计**: 总项目数、Token 和成本
 2. **今日使用**: 按项目显示当日消耗（仅在有活动时显示）
 3. **每日统计**: 历史趋势（仅在存在历史数据时显示）
 4. **项目排名**: 按成本排序的顶级项目
+5. **模型统计**: 个别模型消耗和排名（使用2种以上模型时显示）
 
 ## 模型定价
 
@@ -80,10 +88,35 @@ pricing:
     cache_write_per_million: 3.75
 
   gemini-2.5-pro:
-    # 分级定价示例
-    input_per_million_low: 1.25    # ≤200K tokens
-    input_per_million_high: 2.50   # >200K tokens
-    threshold: 200000
+    # 多级定价示例
+    tiers:
+      - threshold: 200000    # ≤200K tokens
+        input_per_million: 1.25
+        output_per_million: 10.0
+      - # >200K tokens (无上限)
+        input_per_million: 2.50
+        output_per_million: 15.0
+
+  qwen3-coder:
+    # 人民币定价示例
+    currency: "CNY"
+    tiers:
+      - threshold: 32000     # ≤32K tokens
+        input_per_million: 4.0
+        output_per_million: 16.0
+      - threshold: 128000    # ≤128K tokens
+        input_per_million: 6.0
+        output_per_million: 24.0
+      - threshold: 256000    # ≤256K tokens
+        input_per_million: 10.0
+        output_per_million: 40.0
+      - # >256K tokens (无上限)
+        input_per_million: 20.0
+        output_per_million: 200.0
+
+currency:
+  usd_to_cny: 7.3
+  display_unit: "USD"
 ```
 
 ## 命令行选项
@@ -93,6 +126,8 @@ pricing:
 | `--data-dir` | `~/.claude/projects` | Claude 项目目录 |
 | `--max-days` | `10` | 每日统计显示天数（0=全部） |
 | `--max-projects` | `10` | 项目排名显示数量（0=全部） |
+| `--currency` | `USD` | 显示货币单位（USD/CNY） |
+| `--usd-to-cny` | `7.0` | 人民币转换汇率 |
 | `--log-level` | `WARNING` | 日志级别 |
 | `--export-json` | - | 导出结果到 JSON 文件 |
 

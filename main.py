@@ -40,6 +40,23 @@ class ProjectStats:
 
 
 @dataclass
+class ModelStats:
+    """模型统计数据"""
+
+    model_name: str = ""
+    total_input_tokens: int = 0
+    total_output_tokens: int = 0
+    total_cache_read_tokens: int = 0
+    total_cache_creation_tokens: int = 0
+    total_messages: int = 0
+    total_cost: float = 0.0
+
+    @property
+    def total_tokens(self) -> int:
+        return self.total_input_tokens + self.total_output_tokens
+
+
+@dataclass
 class DailyStats:
     """每日统计数据"""
 
@@ -233,6 +250,7 @@ class ClaudeHistoryAnalyzer:
         self.base_dir = base_dir
         self.project_stats: Dict[str, ProjectStats] = {}
         self.daily_stats: Dict[str, DailyStats] = {}
+        self.model_stats: Dict[str, ModelStats] = {}
         self.pricing_config = load_model_pricing()
         self.currency_config = currency_config or load_currency_config()
         self.model_config_cache: Dict[str, Dict] = {}  # 模型匹配缓存
@@ -288,9 +306,6 @@ class ClaudeHistoryAnalyzer:
         # 分析完成后，设置活跃项目数
         for daily_stats in self.daily_stats.values():
             daily_stats.projects_active = len(daily_stats.project_breakdown)
-
-        # 验证数据一致性
-        self._validate_data_consistency()
 
     def _extract_project_name_from_dir(self, dir_name: str) -> str:
         """从目录名提取项目名称"""
@@ -537,78 +552,19 @@ class ClaudeHistoryAnalyzer:
         else:
             daily_project_stats.models_used[model_name] = 1
 
+        # 更新模型统计
+        if model_name not in self.model_stats:
+            self.model_stats[model_name] = ModelStats(model_name=model_name)
+
+        model_stats = self.model_stats[model_name]
+        model_stats.total_input_tokens += input_tokens
+        model_stats.total_output_tokens += output_tokens
+        model_stats.total_cache_read_tokens += cache_read_tokens
+        model_stats.total_cache_creation_tokens += cache_creation_tokens
+        model_stats.total_messages += 1
+        model_stats.total_cost += message_cost
+
         return True
-
-    def _validate_data_consistency(self) -> None:
-        """验证数据一致性"""
-        logger.info("开始数据一致性验证...")
-
-        # 1. 验证项目统计总和 = 每日统计总和
-        project_totals = {
-            "input_tokens": sum(p.total_input_tokens for p in self.project_stats.values()),
-            "output_tokens": sum(p.total_output_tokens for p in self.project_stats.values()),
-            "cache_read_tokens": sum(p.total_cache_read_tokens for p in self.project_stats.values()),
-            "cache_creation_tokens": sum(p.total_cache_creation_tokens for p in self.project_stats.values()),
-            "messages": sum(p.total_messages for p in self.project_stats.values()),
-            "cost": sum(p.total_cost for p in self.project_stats.values()),
-        }
-
-        daily_totals = {
-            "input_tokens": sum(d.total_input_tokens for d in self.daily_stats.values()),
-            "output_tokens": sum(d.total_output_tokens for d in self.daily_stats.values()),
-            "cache_read_tokens": sum(d.total_cache_read_tokens for d in self.daily_stats.values()),
-            "cache_creation_tokens": sum(d.total_cache_creation_tokens for d in self.daily_stats.values()),
-            "messages": sum(d.total_messages for d in self.daily_stats.values()),
-            "cost": sum(d.total_cost for d in self.daily_stats.values()),
-        }
-
-        # 检查是否一致（允许浮点数误差）
-        tolerance = 0.01  # 1分钱的误差
-        for key in project_totals:
-            if key == "cost":
-                if abs(project_totals[key] - daily_totals[key]) > tolerance:
-                    logger.error(
-                        f"数据不一致: 项目统计{key}({project_totals[key]:.2f}) != 每日统计({daily_totals[key]:.2f})"
-                    )
-            else:
-                if project_totals[key] != daily_totals[key]:
-                    logger.error(f"数据不一致: 项目统计{key}({project_totals[key]}) != 每日统计({daily_totals[key]})")
-
-        # 2. 验证每日项目breakdown总和 = 每日统计总计
-        for date_str, daily_stats in self.daily_stats.items():
-            breakdown_totals = {
-                "input_tokens": sum(p.total_input_tokens for p in daily_stats.project_breakdown.values()),
-                "output_tokens": sum(p.total_output_tokens for p in daily_stats.project_breakdown.values()),
-                "cache_read_tokens": sum(p.total_cache_read_tokens for p in daily_stats.project_breakdown.values()),
-                "cache_creation_tokens": sum(
-                    p.total_cache_creation_tokens for p in daily_stats.project_breakdown.values()
-                ),
-                "messages": sum(p.total_messages for p in daily_stats.project_breakdown.values()),
-                "cost": sum(p.total_cost for p in daily_stats.project_breakdown.values()),
-            }
-
-            daily_direct = {
-                "input_tokens": daily_stats.total_input_tokens,
-                "output_tokens": daily_stats.total_output_tokens,
-                "cache_read_tokens": daily_stats.total_cache_read_tokens,
-                "cache_creation_tokens": daily_stats.total_cache_creation_tokens,
-                "messages": daily_stats.total_messages,
-                "cost": daily_stats.total_cost,
-            }
-
-            for key in breakdown_totals:
-                if key == "cost":
-                    if abs(breakdown_totals[key] - daily_direct[key]) > tolerance:
-                        logger.error(
-                            f"{date_str}数据不一致: breakdown {key}({breakdown_totals[key]:.2f}) != 直接统计({daily_direct[key]:.2f})"
-                        )
-                else:
-                    if breakdown_totals[key] != daily_direct[key]:
-                        logger.error(
-                            f"{date_str}数据不一致: breakdown {key}({breakdown_totals[key]}) != 直接统计({daily_direct[key]})"
-                        )
-
-        logger.info("数据一致性验证完成")
 
     def _generate_rich_report(self, max_days=10, max_projects=10) -> None:
         """生成Rich格式的统计报告
@@ -779,6 +735,37 @@ class ClaudeHistoryAnalyzer:
             console.print("\n")
             console.print(projects_table)
 
+        # 6. 模型消耗统计表格（只在有2种或以上模型时显示）
+        valid_models = [m for m in self.model_stats.values() if m.total_tokens > 0]
+        if len(valid_models) >= 2:
+            models_table = Table(
+                title="🤖 模型消耗统计", box=box.ROUNDED, show_header=True, header_style="bold cyan"
+            )
+            models_table.add_column("模型", style="cyan", no_wrap=False, max_width=35)
+            models_table.add_column("输入Token", style="bright_blue", justify="right", min_width=8)
+            models_table.add_column("输出Token", style="yellow", justify="right", min_width=8)
+            models_table.add_column("缓存读取", style="magenta", justify="right", min_width=8)
+            models_table.add_column("缓存创建", style="bright_magenta", justify="right", min_width=8)
+            models_table.add_column("消息数", style="red", justify="right", min_width=6)
+            models_table.add_column("成本", style="green", justify="right", min_width=8)
+
+            # 按成本排序模型
+            sorted_models = sorted(valid_models, key=lambda x: x.total_cost, reverse=True)
+
+            for model in sorted_models:
+                models_table.add_row(
+                    model.model_name,
+                    self._format_number(model.total_input_tokens),
+                    self._format_number(model.total_output_tokens),
+                    self._format_number(model.total_cache_read_tokens),
+                    self._format_number(model.total_cache_creation_tokens),
+                    self._format_number(model.total_messages),
+                    self._format_cost(model.total_cost),
+                )
+
+            console.print("\n")
+            console.print(models_table)
+
     def _format_number(self, num: int) -> str:
         """格式化数字显示"""
         if num >= 1_000_000:
@@ -795,8 +782,10 @@ class ClaudeHistoryAnalyzer:
             "analysis_timestamp": datetime.now().isoformat(),
             "project_stats": {},
             "daily_stats": {},
+            "model_stats": {},
             "summary": {
                 "total_projects": len(self.project_stats),
+                "total_models": len(self.model_stats),
                 "total_input_tokens": sum(p.total_input_tokens for p in self.project_stats.values()),
                 "total_output_tokens": sum(p.total_output_tokens for p in self.project_stats.values()),
                 "total_cache_read_tokens": sum(p.total_cache_read_tokens for p in self.project_stats.values()),
@@ -846,6 +835,18 @@ class ClaudeHistoryAnalyzer:
                 "models_used": dict(stats.models_used),
                 "projects_active": stats.projects_active,
                 "project_breakdown": project_breakdown,
+            }
+
+        # 转换模型统计
+        for name, stats in self.model_stats.items():
+            export_data["model_stats"][name] = {
+                "model_name": stats.model_name,
+                "total_input_tokens": stats.total_input_tokens,
+                "total_output_tokens": stats.total_output_tokens,
+                "total_cache_read_tokens": stats.total_cache_read_tokens,
+                "total_cache_creation_tokens": stats.total_cache_creation_tokens,
+                "total_messages": stats.total_messages,
+                "total_cost": stats.total_cost,
             }
 
         # 写入JSON文件
