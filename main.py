@@ -16,6 +16,8 @@ logging.basicConfig(level=logging.WARNING, format="%(asctime)s - %(name)s - %(le
 logger = logging.getLogger(__name__)
 console = Console()
 
+DEFAULT_USD_TO_CNY = 7.0
+
 
 @dataclass
 class ProjectStats:
@@ -57,32 +59,48 @@ class DailyStats:
         return self.total_input_tokens + self.total_output_tokens
 
 
-def load_model_pricing(config_file: str = "model_pricing.yaml") -> Dict:
-    """加载模型定价配置（支持YAML和JSON格式）"""
+def load_full_config(config_file: str = "model_pricing.yaml") -> Dict:
+    """加载完整配置（包括定价和货币配置）"""
     try:
         config_path = Path(__file__).parent / config_file
         if config_path.exists():
             with open(config_path, "r", encoding="utf-8") as f:
                 if config_file.endswith(".yaml") or config_file.endswith(".yml"):
-                    config = yaml.safe_load(f)
-                    # 如果配置有 pricing 字段，返回该字段；否则返回整个配置
-                    return config.get("pricing", config)
+                    return yaml.safe_load(f)
                 else:
-                    config = json.load(f)
-                    return config.get("pricing", config)
+                    return json.load(f)
     except Exception:
-        logging.warning(f"无法加载定价配置文件 {config_file}", exc_info=True)
+        logging.warning(f"无法加载配置文件 {config_file}，使用默认配置", exc_info=True)
 
-    # 使用默认定价
-    logger.warning("无法加载定价配置，使用默认定价")
     return {
-        "sonnet": {
-            "input_per_million": 3.0,
-            "output_per_million": 15.0,
-            "cache_read_per_million": 0.3,
-            "cache_write_per_million": 3.75,
-        }
+        "currency": {"usd_to_cny": DEFAULT_USD_TO_CNY, "display_unit": "USD"},
+        "pricing": {
+            "sonnet": {
+                "input_per_million": 3.0,
+                "output_per_million": 15.0,
+                "cache_read_per_million": 0.3,
+                "cache_write_per_million": 3.75,
+            },
+            "opus": {
+                "input_per_million": 15.0,
+                "output_per_million": 75.0,
+                "cache_read_per_million": 1.5,
+                "cache_write_per_million": 18.75,
+            },
+        },
     }
+
+
+def load_model_pricing(config_file: str = "model_pricing.yaml") -> Dict:
+    """加载模型定价配置（支持YAML和JSON格式）"""
+    full_config = load_full_config(config_file)
+    return full_config.get("pricing", {})
+
+
+def load_currency_config(config_file: str = "model_pricing.yaml") -> Dict:
+    """加载货币配置"""
+    full_config = load_full_config(config_file)
+    return full_config.get("currency", {"usd_to_cny": DEFAULT_USD_TO_CNY, "display_unit": "USD"})
 
 
 def calculate_model_cost(
@@ -93,6 +111,7 @@ def calculate_model_cost(
     cache_creation_tokens: int = 0,
     pricing_config: Optional[Dict] = None,
     model_config_cache: Optional[Dict[str, Dict]] = None,
+    currency_config: Optional[Dict] = None,
 ) -> float:
     """
     计算指定模型的成本
@@ -141,24 +160,47 @@ def calculate_model_cost(
         if model_config_cache is not None:
             model_config_cache[model_name] = model_config
 
-    # 计算成本 - 支持分级定价
-    threshold = model_config.get("threshold", 0)
+    # 计算成本 - 支持多级定价和标准定价
+    input_rate = 0
+    output_rate = 0
+    cache_read_rate = 0
+    cache_write_rate = 0
 
-    # 检查是否是分级定价模型（如Gemini 2.5 Pro）- 基于单条消息的input_tokens
-    if threshold > 0 and "input_per_million_low" in model_config:
-        # 分级定价逻辑
-        if input_tokens <= threshold:
-            # 低用量定价
-            input_rate = model_config.get("input_per_million_low", 0)
-            output_rate = model_config.get("output_per_million_low", 0)
-            cache_read_rate = model_config.get("cache_read_per_million_low", 0)
-            cache_write_rate = model_config.get("cache_write_per_million_low", 0)
-        else:
-            # 高用量定价
-            input_rate = model_config.get("input_per_million_high", 0)
-            output_rate = model_config.get("output_per_million_high", 0)
-            cache_read_rate = model_config.get("cache_read_per_million_high", 0)
-            cache_write_rate = model_config.get("cache_write_per_million_high", 0)
+    if "tiers" in model_config:
+        # 多级定价逻辑 - 按threshold排序，找到适用的档位（上限方式）
+        tiers = model_config.get("tiers", [])
+        selected_tier = None
+
+        # 排序：有threshold的在前，没有threshold的在最后
+        def sort_key(tier):
+            threshold = tier.get("threshold")
+            if threshold is None:
+                return float("inf")  # 没有threshold的排到最后
+            elif threshold == "inf":
+                return float("inf")
+            return float(threshold)
+
+        sorted_tiers = sorted(tiers, key=sort_key)
+
+        # 找到第一个适用的档位（input_tokens <= threshold 或 没有threshold限制）
+        for tier in sorted_tiers:
+            threshold = tier.get("threshold")
+            if threshold is None:  # 没有threshold限制，适用于所有情况
+                selected_tier = tier
+                break
+            elif threshold == "inf" or input_tokens <= float(threshold):
+                selected_tier = tier
+                break
+
+        # 如果没有找到适用档位，使用最后一个（通常是无threshold限制的档位）
+        if selected_tier is None and sorted_tiers:
+            selected_tier = sorted_tiers[-1]
+
+        if selected_tier:
+            input_rate = selected_tier.get("input_per_million", 0)
+            output_rate = selected_tier.get("output_per_million", 0)
+            cache_read_rate = selected_tier.get("cache_read_per_million", 0)
+            cache_write_rate = selected_tier.get("cache_write_per_million", 0)
     else:
         # 标准定价
         input_rate = model_config.get("input_per_million", 0)
@@ -173,18 +215,39 @@ def calculate_model_cost(
     cache_creation_cost = (cache_creation_tokens / 1_000_000) * cache_write_rate
 
     total_cost = input_cost + output_cost + cache_read_cost + cache_creation_cost
+
+    # 处理模型特定货币：如果模型配置指定了货币，需要转换为美元
+    model_currency = model_config.get("currency", "USD")
+    if model_currency == "CNY" and currency_config:
+        # 将人民币转换为美元作为内部统一计价单位
+        exchange_rate = currency_config.get("usd_to_cny", DEFAULT_USD_TO_CNY)
+        total_cost = total_cost / exchange_rate
+
     return total_cost
 
 
 class ClaudeHistoryAnalyzer:
     """Claude历史记录分析器"""
 
-    def __init__(self, base_dir: Path):
+    def __init__(self, base_dir: Path, currency_config: Optional[Dict] = None):
         self.base_dir = base_dir
         self.project_stats: Dict[str, ProjectStats] = {}
         self.daily_stats: Dict[str, DailyStats] = {}
         self.pricing_config = load_model_pricing()
+        self.currency_config = currency_config or load_currency_config()
         self.model_config_cache: Dict[str, Dict] = {}  # 模型匹配缓存
+
+    def _convert_currency(self, amount: float) -> float:
+        """根据配置转换货币"""
+        if self.currency_config.get("display_unit", "USD") == "CNY":
+            return amount * self.currency_config.get("usd_to_cny", DEFAULT_USD_TO_CNY)
+        return amount
+
+    def _format_cost(self, cost: float) -> str:
+        """格式化成本显示"""
+        converted_cost = self._convert_currency(cost)
+        currency_symbol = "¥" if self.currency_config.get("display_unit", "USD") == "CNY" else "$"
+        return f"{currency_symbol}{converted_cost:.2f}"
 
     def analyze_directory(self, base_dir: Path) -> None:
         """分析指定目录及其子目录中的所有JSONL文件"""
@@ -240,12 +303,12 @@ class ClaudeHistoryAnalyzer:
         if project_dir.exists():
             for jsonl_file in project_dir.glob("*.jsonl"):
                 try:
-                    with open(jsonl_file, 'r', encoding='utf-8') as f:
+                    with open(jsonl_file, "r", encoding="utf-8") as f:
                         first_line = f.readline().strip()
                         if first_line:
                             data = json.loads(first_line)
-                            if 'cwd' in data:
-                                cwd_path = data['cwd']
+                            if "cwd" in data:
+                                cwd_path = data["cwd"]
                                 # 提取项目名称 (路径的最后一部分)
                                 project_name = Path(cwd_path).name
                                 if project_name:
@@ -410,6 +473,7 @@ class ClaudeHistoryAnalyzer:
                 cache_creation_tokens,
                 self.pricing_config,
                 self.model_config_cache,
+                self.currency_config,
             )
         except Exception:
             logger.exception(f"计算成本时出错")
@@ -578,7 +642,7 @@ class ClaudeHistoryAnalyzer:
         summary_table.add_row("输出Token", f"{total_output_tokens/1_000_000:.1f}M")
         summary_table.add_row("缓存读取", f"{total_cache_read_tokens/1_000_000:.1f}M")
         summary_table.add_row("缓存创建", f"{total_cache_creation_tokens/1_000_000:.1f}M")
-        summary_table.add_row("总成本", f"${total_cost:.2f}")
+        summary_table.add_row("总成本", self._format_cost(total_cost))
         summary_table.add_row("总消息数", f"{total_messages:,}")
 
         console.print("\n")
@@ -613,7 +677,7 @@ class ClaudeHistoryAnalyzer:
                         self._format_number(project.total_cache_read_tokens),
                         self._format_number(project.total_cache_creation_tokens),
                         self._format_number(project.total_messages),
-                        f"${project.total_cost:.2f}",
+                        self._format_cost(project.total_cost),
                     )
 
             # 添加总计行
@@ -625,7 +689,7 @@ class ClaudeHistoryAnalyzer:
                 self._format_number(today_stats.total_cache_read_tokens),
                 self._format_number(today_stats.total_cache_creation_tokens),
                 self._format_number(today_stats.total_messages),
-                f"${today_stats.total_cost:.2f}",
+                self._format_cost(today_stats.total_cost),
             )
 
             console.print("\n")
@@ -634,10 +698,10 @@ class ClaudeHistoryAnalyzer:
         # 4. 每日消耗统计（只显示有数据的日期，且需有今天以外的数据）
         valid_daily_stats = {k: v for k, v in self.daily_stats.items() if v.total_tokens > 0}
         today_str = date.today().isoformat()
-        
+
         # 排除今天的数据，检查是否有历史数据
         historical_stats = {k: v for k, v in valid_daily_stats.items() if k != today_str}
-        
+
         if historical_stats:
             title_suffix = f"(最近{max_days}天)" if max_days > 0 else "(全部)"
             daily_table = Table(
@@ -657,7 +721,7 @@ class ClaudeHistoryAnalyzer:
 
             if max_days > 0:
                 # 生成最近max_days天的日期列表（从昨天开始）
-                date_list = [(today - timedelta(days=i+1)).isoformat() for i in range(max_days)]
+                date_list = [(today - timedelta(days=i + 1)).isoformat() for i in range(max_days)]
                 # 只保留有数据的日期
                 date_list = [d for d in date_list if d in valid_daily_stats]
             else:
@@ -673,7 +737,7 @@ class ClaudeHistoryAnalyzer:
                     self._format_number(daily_stats.total_cache_read_tokens),
                     self._format_number(daily_stats.total_cache_creation_tokens),
                     self._format_number(daily_stats.total_messages),
-                    f"${daily_stats.total_cost:.2f}",
+                    self._format_cost(daily_stats.total_cost),
                     str(daily_stats.projects_active),
                 )
 
@@ -709,7 +773,7 @@ class ClaudeHistoryAnalyzer:
                     self._format_number(project.total_cache_read_tokens),
                     self._format_number(project.total_cache_creation_tokens),
                     self._format_number(project.total_messages),
-                    f"${project.total_cost:.2f}",
+                    self._format_cost(project.total_cost),
                 )
 
             console.print("\n")
@@ -803,14 +867,27 @@ def main():
     )
     parser.add_argument("--max-days", type=int, default=10, help="每日统计显示的最大天数，0表示全部（默认：10）")
     parser.add_argument("--max-projects", type=int, default=10, help="项目统计显示的最大项目数，0表示全部（默认：10）")
+    parser.add_argument(
+        "--currency", choices=["USD", "CNY"], default=None, help="显示货币单位（USD或CNY），默认使用配置文件中的设置"
+    )
+    parser.add_argument("--usd-to-cny", type=float, default=None, help="美元到人民币的汇率，默认使用配置文件中的设置")
 
     args = parser.parse_args()
 
     # 设置日志级别
     logging.getLogger().setLevel(getattr(logging, args.log_level))
 
+    # 加载货币配置
+    currency_config = load_currency_config()
+
+    # 如果命令行参数指定了货币单位或汇率，则覆盖配置文件中的设置
+    if args.currency is not None:
+        currency_config["display_unit"] = args.currency
+    if args.usd_to_cny is not None:
+        currency_config["usd_to_cny"] = args.usd_to_cny
+
     # 创建分析器并运行分析
-    analyzer = ClaudeHistoryAnalyzer(args.data_dir)
+    analyzer = ClaudeHistoryAnalyzer(args.data_dir, currency_config)
     analyzer.analyze_directory(args.data_dir)
 
     # 生成报告
