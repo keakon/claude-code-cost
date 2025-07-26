@@ -16,6 +16,7 @@ from rich.table import Table
 
 from .billing import calculate_model_cost, load_currency_config, load_model_pricing
 from .models import DailyStats, ModelStats, ProjectStats
+from .i18n import get_i18n, t
 
 # 配置日志
 logger = logging.getLogger(__name__)
@@ -27,7 +28,7 @@ DEFAULT_USD_TO_CNY = 7.0
 class ClaudeHistoryAnalyzer:
     """Claude历史记录分析器"""
 
-    def __init__(self, base_dir: Path, currency_config: Optional[Dict] = None):
+    def __init__(self, base_dir: Path, currency_config: Optional[Dict] = None, language: str = None):
         self.base_dir = base_dir
         self.project_stats: Dict[str, ProjectStats] = {}
         self.daily_stats: Dict[str, DailyStats] = {}
@@ -35,6 +36,7 @@ class ClaudeHistoryAnalyzer:
         self.pricing_config = load_model_pricing()
         self.currency_config = currency_config or load_currency_config()
         self.model_config_cache: Dict[str, Dict] = {}  # 模型匹配缓存
+        self.i18n = get_i18n(language)
 
     def _convert_currency(self, amount: float) -> float:
         """根据配置转换货币"""
@@ -51,16 +53,16 @@ class ClaudeHistoryAnalyzer:
     def analyze_directory(self, base_dir: Path) -> None:
         """分析指定目录及其子目录中的所有JSONL文件"""
         if not base_dir.exists():
-            logger.error(f"目录不存在: {base_dir}")
+            logger.error(self.i18n.t('directory_not_exist', path=base_dir))
             return
 
-        logger.info(f"开始分析目录: {base_dir}")
+        logger.info(self.i18n.t('analysis_start', path=base_dir))
 
         # 查找所有项目目录
         project_dirs = [d for d in base_dir.iterdir() if d.is_dir() and d.name.startswith("-")]
 
         if not project_dirs:
-            logger.warning(f"在 {base_dir} 中未找到任何项目目录")
+            logger.warning(self.i18n.t('no_project_dirs', path=base_dir))
             return
 
         total_files = 0
@@ -74,15 +76,15 @@ class ClaudeHistoryAnalyzer:
             total_files += files_processed
             total_messages += messages_processed
 
-        logger.info(f"分析完成: {len(project_dirs)} 个项目, {total_files} 个文件, {total_messages} 条消息")
+        logger.info(self.i18n.t('analysis_complete', projects=len(project_dirs), files=total_files, messages=total_messages))
 
         # 验证分析结果
         if not self.project_stats:
-            logger.warning("未找到任何有效的项目数据")
+            logger.warning(self.i18n.t('no_data_found'))
         elif total_messages == 0:
-            logger.warning("未找到任何有效的消息数据")
+            logger.warning(self.i18n.t('no_messages_found'))
         else:
-            logger.info(f"成功分析 {len(self.project_stats)} 个项目")
+            logger.info(self.i18n.t('projects_analyzed', count=len(self.project_stats)))
 
         # 分析完成后，设置活跃项目数
         for daily_stats in self.daily_stats.values():
@@ -159,7 +161,7 @@ class ClaudeHistoryAnalyzer:
                 messages_processed += file_messages
                 files_processed += 1
             except Exception:
-                logger.exception(f"处理文件 {jsonl_file} 时出错")
+                logger.exception(self.i18n.t('file_processing_error', path=jsonl_file))
                 continue
 
         return files_processed, messages_processed
@@ -174,7 +176,7 @@ class ClaudeHistoryAnalyzer:
             file_creation_time = datetime.fromtimestamp(file_stat.st_ctime)
             fallback_date = file_creation_time.strftime("%Y-%m-%d")
         except Exception:
-            logger.exception(f"无法获取文件 {file_path} 的创建时间")
+            logger.exception(self.i18n.t('file_creation_time_error', path=file_path))
             fallback_date = "unknown"
 
         try:
@@ -189,14 +191,14 @@ class ClaudeHistoryAnalyzer:
                         if self._process_message(data, project_stats, fallback_date):
                             messages_processed += 1
                     except Exception:
-                        logger.exception(f"处理消息失败 {file_path}:{line_number}")
+                        logger.exception(self.i18n.t('message_processing_error', path=file_path, line=line_number))
                         continue
         except Exception:
-            logger.exception(f"读取文件失败 {file_path}")
+            logger.exception(self.i18n.t('file_read_error', path=file_path))
             return 0
 
         if messages_processed > 0:
-            logger.debug(f"文件 {file_path.name} 处理了 {messages_processed} 条消息")
+            logger.debug(self.i18n.t('file_processed', filename=file_path.name, count=messages_processed))
 
         return messages_processed
 
@@ -209,7 +211,7 @@ class ClaudeHistoryAnalyzer:
             local_dt = utc_dt.astimezone()
             return local_dt.strftime("%Y-%m-%d")
         except Exception:
-            logger.exception(f"时区转换失败: {utc_timestamp_str}")
+            logger.exception(self.i18n.t('timezone_conversion_error', timestamp=utc_timestamp_str))
             return "unknown"
 
     def _process_message(
@@ -222,12 +224,12 @@ class ClaudeHistoryAnalyzer:
 
         message = data.get("message", {})
         if not message:
-            logger.debug("消息数据为空")
+            logger.debug(self.i18n.t('empty_message_data'))
             return False
 
         usage = message.get("usage", {})
         if not usage:
-            logger.debug("缺少usage信息")
+            logger.debug(self.i18n.t('missing_usage_info'))
             return False
 
         # 提取token使用信息
@@ -237,7 +239,7 @@ class ClaudeHistoryAnalyzer:
             cache_read_tokens = int(usage.get("cache_read_input_tokens") or 0)
             cache_creation_tokens = int(usage.get("cache_creation_input_tokens") or 0)
         except (ValueError, TypeError):
-            logger.warning(f"Token数量格式错误", exc_info=True)
+            logger.warning(self.i18n.t('token_format_error'), exc_info=True)
             return False
 
         if input_tokens == 0 and output_tokens == 0:
@@ -246,17 +248,17 @@ class ClaudeHistoryAnalyzer:
         # 提取模型信息
         model_name = message.get("model", "unknown")
         if not model_name or model_name == "unknown":
-            logger.debug("缺少模型信息")
+            logger.debug(self.i18n.t('missing_model_info'))
 
         # 提取时间戳并转换为本地时区，失败时使用备用日期
         timestamp_str = data.get("timestamp", "")
         if timestamp_str:
             date_str = self._convert_utc_to_local(timestamp_str)
             if date_str == "unknown" and fallback_date != "unknown":
-                logger.debug(f"使用文件创建时间作为日期: {fallback_date}")
+                logger.debug(self.i18n.t('using_file_creation_time', date=fallback_date))
                 date_str = fallback_date
         else:
-            logger.debug("缺少时间戳信息，使用备用日期")
+            logger.debug(self.i18n.t('missing_timestamp_info'))
             date_str = fallback_date
 
         # 计算该消息的成本
@@ -272,7 +274,7 @@ class ClaudeHistoryAnalyzer:
                 self.currency_config,
             )
         except Exception:
-            logger.exception(f"计算成本时出错")
+            logger.exception(self.i18n.t('cost_calculation_error'))
             message_cost = 0.0
 
         # 更新项目统计
@@ -358,7 +360,7 @@ class ClaudeHistoryAnalyzer:
         valid_projects = [p for p in self.project_stats.values() if p.total_tokens > 0]
 
         if not valid_projects:
-            console.print("[red]未找到任何有效的项目数据[/red]")
+            console.print(f"[red]{self.i18n.t('no_data_found')}[/red]")
             return
 
         # 计算总体统计
@@ -370,17 +372,17 @@ class ClaudeHistoryAnalyzer:
         total_messages = sum(p.total_messages for p in valid_projects)
 
         # 1. 总体统计摘要
-        summary_table = Table(title="📊 总体统计", box=box.ROUNDED, show_header=True, header_style="bold cyan")
-        summary_table.add_column("指标", style="cyan", no_wrap=True, width=20)
-        summary_table.add_column("数值", style="yellow", justify="right", width=20)
+        summary_table = Table(title=self.i18n.t('overall_stats'), box=box.ROUNDED, show_header=True, header_style="bold cyan")
+        summary_table.add_column(self.i18n.t('metric'), style="cyan", no_wrap=True, width=20)
+        summary_table.add_column(self.i18n.t('value'), style="yellow", justify="right", width=20)
 
-        summary_table.add_row("有效项目数", f"{len(valid_projects)}")
-        summary_table.add_row("输入Token", f"{total_input_tokens/1_000_000:.1f}M")
-        summary_table.add_row("输出Token", f"{total_output_tokens/1_000_000:.1f}M")
-        summary_table.add_row("缓存读取", f"{total_cache_read_tokens/1_000_000:.1f}M")
-        summary_table.add_row("缓存创建", f"{total_cache_creation_tokens/1_000_000:.1f}M")
-        summary_table.add_row("总成本", self._format_cost(total_cost))
-        summary_table.add_row("总消息数", f"{total_messages:,}")
+        summary_table.add_row(self.i18n.t('valid_projects'), f"{len(valid_projects)}")
+        summary_table.add_row(self.i18n.t('input_tokens'), f"{total_input_tokens/1_000_000:.1f}M")
+        summary_table.add_row(self.i18n.t('output_tokens'), f"{total_output_tokens/1_000_000:.1f}M")
+        summary_table.add_row(self.i18n.t('cache_read'), f"{total_cache_read_tokens/1_000_000:.1f}M")
+        summary_table.add_row(self.i18n.t('cache_write'), f"{total_cache_creation_tokens/1_000_000:.1f}M")
+        summary_table.add_row(self.i18n.t('total_cost'), self._format_cost(total_cost))
+        summary_table.add_row(self.i18n.t('total_messages'), f"{total_messages:,}")
 
         console.print("\n")
         console.print(summary_table)
@@ -390,15 +392,15 @@ class ClaudeHistoryAnalyzer:
         today_stats = self.daily_stats.get(today_str)
         if today_stats and today_stats.project_breakdown and today_stats.total_cost > 0:
             today_table = Table(
-                title=f"📈 今日消耗统计 ({today_str})", box=box.ROUNDED, show_header=True, header_style="bold cyan"
+                title=f"{self.i18n.t('today_usage')} ({today_str})", box=box.ROUNDED, show_header=True, header_style="bold cyan"
             )
-            today_table.add_column("项目", style="cyan", no_wrap=False, max_width=35)
-            today_table.add_column("输入Token", style="bright_blue", justify="right", min_width=8)
-            today_table.add_column("输出Token", style="yellow", justify="right", min_width=8)
-            today_table.add_column("缓存读取", style="magenta", justify="right", min_width=8)
-            today_table.add_column("缓存创建", style="bright_magenta", justify="right", min_width=8)
-            today_table.add_column("消息数", style="red", justify="right", min_width=6)
-            today_table.add_column("成本", style="green", justify="right", min_width=8)
+            today_table.add_column(self.i18n.t('project'), style="cyan", no_wrap=False, max_width=35)
+            today_table.add_column(self.i18n.t('input_tokens'), style="bright_blue", justify="right", min_width=8)
+            today_table.add_column(self.i18n.t('output_tokens'), style="yellow", justify="right", min_width=8)
+            today_table.add_column(self.i18n.t('cache_read'), style="magenta", justify="right", min_width=8)
+            today_table.add_column(self.i18n.t('cache_write'), style="bright_magenta", justify="right", min_width=8)
+            today_table.add_column(self.i18n.t('messages'), style="red", justify="right", min_width=6)
+            today_table.add_column(self.i18n.t('cost'), style="green", justify="right", min_width=8)
 
             # 按成本排序今日项目
             sorted_today_projects = sorted(
@@ -420,7 +422,7 @@ class ClaudeHistoryAnalyzer:
             # 添加总计行
             today_table.add_section()
             today_table.add_row(
-                "总计",
+                self.i18n.t('total'),
                 self._format_number(today_stats.total_input_tokens),
                 self._format_number(today_stats.total_output_tokens),
                 self._format_number(today_stats.total_cache_read_tokens),
@@ -440,18 +442,18 @@ class ClaudeHistoryAnalyzer:
         historical_stats = {k: v for k, v in valid_daily_stats.items() if k != today_str}
 
         if historical_stats:
-            title_suffix = f"(最近{max_days}天)" if max_days > 0 else "(全部)"
+            title_suffix = f"({self.i18n.t('recent_days', days=max_days)})" if max_days > 0 else f"({self.i18n.t('all_data')})"
             daily_table = Table(
-                title=f"📅 每日消耗统计 {title_suffix}", box=box.ROUNDED, show_header=True, header_style="bold cyan"
+                title=f"{self.i18n.t('daily_stats')} {title_suffix}", box=box.ROUNDED, show_header=True, header_style="bold cyan"
             )
-            daily_table.add_column("日期", style="cyan", justify="center", min_width=10)
-            daily_table.add_column("输入Token", style="bright_blue", justify="right", min_width=8)
-            daily_table.add_column("输出Token", style="yellow", justify="right", min_width=8)
-            daily_table.add_column("缓存读取", style="magenta", justify="right", min_width=8)
-            daily_table.add_column("缓存创建", style="bright_magenta", justify="right", min_width=8)
-            daily_table.add_column("消息数", style="red", justify="right", min_width=6)
-            daily_table.add_column("成本", style="green", justify="right", min_width=8)
-            daily_table.add_column("活跃项目", style="orange3", justify="right", min_width=8)
+            daily_table.add_column(self.i18n.t('date'), style="cyan", justify="center", min_width=10)
+            daily_table.add_column(self.i18n.t('input_tokens'), style="bright_blue", justify="right", min_width=8)
+            daily_table.add_column(self.i18n.t('output_tokens'), style="yellow", justify="right", min_width=8)
+            daily_table.add_column(self.i18n.t('cache_read'), style="magenta", justify="right", min_width=8)
+            daily_table.add_column(self.i18n.t('cache_write'), style="bright_magenta", justify="right", min_width=8)
+            daily_table.add_column(self.i18n.t('messages'), style="red", justify="right", min_width=6)
+            daily_table.add_column(self.i18n.t('cost'), style="green", justify="right", min_width=8)
+            daily_table.add_column(self.i18n.t('active_projects'), style="orange3", justify="right", min_width=8)
 
             # 生成最近N天的日期列表（排除今天）
             today = date.today()
@@ -484,17 +486,17 @@ class ClaudeHistoryAnalyzer:
         # 5. 项目消耗统计表格（放在最后，只在有数据时显示）
         valid_projects = [p for p in self.project_stats.values() if p.total_tokens > 0]
         if valid_projects:
-            title_suffix = f"(TOP {max_projects})" if max_projects > 0 else "(全部)"
+            title_suffix = f"({self.i18n.t('top_n', n=max_projects)})" if max_projects > 0 else f"({self.i18n.t('all_data')})"
             projects_table = Table(
-                title=f"🏗️ 项目消耗统计 {title_suffix}", box=box.ROUNDED, show_header=True, header_style="bold cyan"
+                title=f"{self.i18n.t('project_stats')} {title_suffix}", box=box.ROUNDED, show_header=True, header_style="bold cyan"
             )
-            projects_table.add_column("项目", style="cyan", no_wrap=False, max_width=35)
-            projects_table.add_column("输入Token", style="bright_blue", justify="right", min_width=8)
-            projects_table.add_column("输出Token", style="yellow", justify="right", min_width=8)
-            projects_table.add_column("缓存读取", style="magenta", justify="right", min_width=8)
-            projects_table.add_column("缓存创建", style="bright_magenta", justify="right", min_width=8)
-            projects_table.add_column("消息数", style="red", justify="right", min_width=6)
-            projects_table.add_column("成本", style="green", justify="right", min_width=8)
+            projects_table.add_column(self.i18n.t('project'), style="cyan", no_wrap=False, max_width=35)
+            projects_table.add_column(self.i18n.t('input_tokens'), style="bright_blue", justify="right", min_width=8)
+            projects_table.add_column(self.i18n.t('output_tokens'), style="yellow", justify="right", min_width=8)
+            projects_table.add_column(self.i18n.t('cache_read'), style="magenta", justify="right", min_width=8)
+            projects_table.add_column(self.i18n.t('cache_write'), style="bright_magenta", justify="right", min_width=8)
+            projects_table.add_column(self.i18n.t('messages'), style="red", justify="right", min_width=6)
+            projects_table.add_column(self.i18n.t('cost'), style="green", justify="right", min_width=8)
 
             # 按成本排序项目
             sorted_projects = sorted(valid_projects, key=lambda x: x.total_cost, reverse=True)
@@ -520,15 +522,15 @@ class ClaudeHistoryAnalyzer:
         valid_models = [m for m in self.model_stats.values() if m.total_tokens > 0]
         if len(valid_models) >= 2:
             models_table = Table(
-                title="🤖 模型消耗统计", box=box.ROUNDED, show_header=True, header_style="bold cyan"
+                title=self.i18n.t('model_stats'), box=box.ROUNDED, show_header=True, header_style="bold cyan"
             )
-            models_table.add_column("模型", style="cyan", no_wrap=False, max_width=35)
-            models_table.add_column("输入Token", style="bright_blue", justify="right", min_width=8)
-            models_table.add_column("输出Token", style="yellow", justify="right", min_width=8)
-            models_table.add_column("缓存读取", style="magenta", justify="right", min_width=8)
-            models_table.add_column("缓存创建", style="bright_magenta", justify="right", min_width=8)
-            models_table.add_column("消息数", style="red", justify="right", min_width=6)
-            models_table.add_column("成本", style="green", justify="right", min_width=8)
+            models_table.add_column(self.i18n.t('model'), style="cyan", no_wrap=False, max_width=35)
+            models_table.add_column(self.i18n.t('input_tokens'), style="bright_blue", justify="right", min_width=8)
+            models_table.add_column(self.i18n.t('output_tokens'), style="yellow", justify="right", min_width=8)
+            models_table.add_column(self.i18n.t('cache_read'), style="magenta", justify="right", min_width=8)
+            models_table.add_column(self.i18n.t('cache_write'), style="bright_magenta", justify="right", min_width=8)
+            models_table.add_column(self.i18n.t('messages'), style="red", justify="right", min_width=6)
+            models_table.add_column(self.i18n.t('cost'), style="green", justify="right", min_width=8)
 
             # 按成本排序模型
             sorted_models = sorted(valid_models, key=lambda x: x.total_cost, reverse=True)
@@ -634,4 +636,4 @@ class ClaudeHistoryAnalyzer:
         with open(output_path, "w", encoding="utf-8") as f:
             json.dump(export_data, f, ensure_ascii=False, indent=2)
 
-        logger.info(f"分析结果已导出到: {output_path}")
+        logger.info(self.i18n.t('json_exported', path=output_path))

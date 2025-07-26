@@ -14,6 +14,7 @@
 - **模型洞察**: 个别模型消耗跟踪和成本排名（使用2种以上模型时显示）
 - **数据导出**: 支持 JSON 格式导出供进一步分析
 - **时区处理**: 将 UTC 时间戳转换为本地时间，确保每日统计准确
+- **国际化支持**: 自动检测系统语言，支持英文和中文
 
 ## 安装
 
@@ -115,6 +116,12 @@ ccc --export-json report.json
 
 # 调试模式
 ccc --log-level DEBUG
+
+# 强制使用英文界面
+ccc --language en
+
+# 强制使用中文界面
+ccc --language zh
 ```
 
 ## 输出部分
@@ -204,6 +211,7 @@ EOF
 | `--max-projects` | `10` | 项目排名显示数量（0=全部） |
 | `--currency` | `USD` | 显示货币单位（USD/CNY） |
 | `--usd-to-cny` | `7.0` | 人民币转换汇率 |
+| `--language` | `auto` | 界面语言（en/zh），自动检测 |
 | `--log-level` | `WARNING` | 日志级别 |
 | `--export-json` | - | 导出结果到 JSON 文件 |
 

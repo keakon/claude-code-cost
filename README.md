@@ -12,6 +12,7 @@ A Python tool for analyzing Claude Code usage history, calculating token consump
 - **Model Insights**: Individual model consumption tracking with cost ranking (shown when using 2+ models)
 - **Data Export**: JSON export for further analysis
 - **Time Zone Handling**: Converts UTC timestamps to local time for accurate daily statistics
+- **Internationalization**: Auto-detects system language, supports English and Chinese (Simplified/Traditional)
 
 ## Installation
 
@@ -113,6 +114,12 @@ ccc --export-json report.json
 
 # Debug mode
 ccc --log-level DEBUG
+
+# Force English interface
+ccc --language en
+
+# Force Chinese interface
+ccc --language zh
 ```
 
 ## Output Sections
@@ -202,6 +209,7 @@ The tool includes built-in pricing for:
 | `--max-projects` | `10` | Projects to show in rankings (0=all) |
 | `--currency` | `USD` | Display currency (USD/CNY) |
 | `--usd-to-cny` | `7.0` | Exchange rate for CNY conversion |
+| `--language` | `auto` | Interface language (en/zh), auto-detected |
 | `--log-level` | `WARNING` | Logging level |
 | `--export-json` | - | Export results to JSON file |
 
