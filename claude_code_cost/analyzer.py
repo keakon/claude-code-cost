@@ -7,7 +7,7 @@ import json
 import logging
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 from rich import box
 from rich.console import Console
@@ -149,7 +149,7 @@ class ClaudeHistoryAnalyzer:
 
         return dir_name.lstrip("-")
 
-    def _analyze_single_directory(self, directory: Path, project_name: str) -> tuple[int, int]:
+    def _analyze_single_directory(self, directory: Path, project_name: str) -> Tuple[int, int]:
         """Analyze JSONL files in a single directory"""
         if project_name not in self.project_stats:
             self.project_stats[project_name] = ProjectStats(project_name=project_name)

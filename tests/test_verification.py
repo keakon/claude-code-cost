@@ -11,12 +11,13 @@ import sys
 import tempfile
 from pathlib import Path
 from decimal import Decimal, ROUND_HALF_UP
+from typing import Optional, List
 
 # Import our test data generator
 from generate_test_data import generate_test_data
 
 
-def run_claude_cost(data_dir: str, extra_args: list[str] | None = None) -> dict:
+def run_claude_cost(data_dir: str, extra_args: Optional[List[str]] = None) -> dict:
     """Run claude-cost tool and return parsed JSON output"""
     with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
         json_output = f.name
