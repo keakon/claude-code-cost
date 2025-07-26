@@ -1,8 +1,8 @@
-# Claude 成本分析器
+# Claude Code 成本计算器
 
-一个用于分析 Claude Code 使用成本的 Python 工具，可以计算跨项目和时间段的 Token 消耗和成本。
+一个用于分析 Claude Code 使用历史的 Python 工具，计算跨项目和时间段的 Token 消耗和成本。
 
-![Claude 成本分析器](screenshot.png)
+![Claude Code 成本计算器](screenshot.png)
 
 [English](README.md) | 中文
 
@@ -17,52 +17,104 @@
 
 ## 安装
 
-### 系统要求
-- Python 3.8+
-- 依赖库: `rich`, `pyyaml`
-
-### 快速安装
+### 一键安装（推荐）
 
 ```bash
-# 安装依赖
-pip install rich pyyaml
-
-# 或使用 uv（推荐）
-uv pip install rich pyyaml
+# 自动检测系统最佳安装方式
+curl -sSL https://raw.githubusercontent.com/keakon/claude-code-cost/main/install.sh | bash
 ```
+
+### 方式 1：从 PyPI 安装（推荐）
+
+#### 使用 uv（推荐 - 现代化且快速）
+```bash
+# 安装 uv（如果尚未安装）
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# 作为全局工具安装
+uv tool install claude-code-cost
+
+# 运行命令
+ccc
+```
+
+#### 使用 pipx（传统替代方案）
+```bash
+# 安装 pipx（如果尚未安装）
+brew install pipx  # macOS
+# 或者: python -m pip install --user pipx  # Linux/Windows
+
+# 将 claude-code-cost 作为独立工具安装
+pipx install claude-code-cost
+
+# 现在可以在任何地方运行
+ccc
+```
+
+#### 使用 pip 和虚拟环境
+```bash
+# 创建专用虚拟环境
+python -m venv ~/.venvs/claude-cost
+source ~/.venvs/claude-cost/bin/activate  # Linux/macOS
+# 或者: ~/.venvs/claude-cost/Scripts/activate  # Windows
+
+pip install claude-code-cost
+ccc
+```
+
+### 方式 2：从源码安装
+
+```bash
+# 克隆仓库
+git clone https://github.com/keakon/claude-code-cost.git
+cd claude-code-cost
+
+# 开发模式安装
+uv pip install -e .
+
+# 或使用 pip
+pip install -e .
+```
+
+### 系统要求
+- Python 3.8+
+- 依赖库：`rich`、`pyyaml`（自动安装）
 
 ## 使用方法
 
 ### 基本用法
 
 ```bash
-# 使用默认设置分析
+# 使用默认设置分析（从 PyPI 安装后）
+ccc
+
+# 或者从源码安装后
 python main.py
 
 # 指定自定义数据目录
-python main.py --data-dir /path/to/.claude/projects
+ccc --data-dir /path/to/.claude/projects
 ```
 
 ### 高级选项
 
 ```bash
 # 自定义显示限制
-python main.py --max-days 7 --max-projects 5
+ccc --max-days 7 --max-projects 5
 
 # 显示所有数据
-python main.py --max-days 0 --max-projects 0
+ccc --max-days 0 --max-projects 0
 
 # 以人民币显示成本
-python main.py --currency CNY
+ccc --currency CNY
 
 # 使用自定义汇率
-python main.py --currency CNY --usd-to-cny 7.3
+ccc --currency CNY --usd-to-cny 7.3
 
 # 导出到 JSON
-python main.py --export-json report.json
+ccc --export-json report.json
 
 # 调试模式
-python main.py --log-level DEBUG
+ccc --log-level DEBUG
 ```
 
 ## 输出部分
@@ -75,11 +127,25 @@ python main.py --log-level DEBUG
 4. **项目排名**: 按成本排序的顶级项目
 5. **模型统计**: 个别模型消耗和排名（使用2种以上模型时显示）
 
-## 模型定价
+## 配置
 
-在 `model_pricing.yaml` 中配置模型定价：
+该工具内置了所有支持模型的默认定价，但您可以通过创建用户配置文件来自定义定价。
 
-```yaml
+### 自定义配置
+
+在 `~/.claude-code-cost/model_pricing.yaml` 创建配置文件以覆盖默认设置：
+
+```bash
+# 创建配置目录
+mkdir -p ~/.claude-code-cost
+
+# 创建自定义配置
+cat > ~/.claude-code-cost/model_pricing.yaml << 'EOF'
+# 自定义模型定价配置
+currency:
+  usd_to_cny: 7.3        # 汇率
+  display_unit: "USD"    # 默认显示货币
+
 pricing:
   sonnet:
     input_per_million: 3.0
@@ -113,11 +179,21 @@ pricing:
       - # >256K tokens (无上限)
         input_per_million: 20.0
         output_per_million: 200.0
-
-currency:
-  usd_to_cny: 7.3
-  display_unit: "USD"
+EOF
 ```
+
+### 内置模型
+
+工具包含以下模型的内置定价：
+- **Claude 模型**: Sonnet、Opus
+- **Gemini 模型**: 1.5-Pro、2.5-Pro（带阶梯定价）
+- **Qwen 模型**: Qwen3-Coder（人民币定价和阶梯结构）
+
+### 配置优先级
+
+1. **内置默认**: 总是可用作为后备
+2. **包配置**: 包含在软件包中
+3. **用户配置**: `~/.claude-code-cost/model_pricing.yaml`（最高优先级）
 
 ## 命令行选项
 

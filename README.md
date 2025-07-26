@@ -1,8 +1,8 @@
-# Claude Cost Analyzer
+# Claude Code Cost Calculator
 
 A Python tool for analyzing Claude Code usage history, calculating token consumption and costs across projects and time periods.
 
-![Claude Cost Analyzer](screenshot.png)
+![Claude Code Cost Calculator](screenshot.png)
 
 ## Features
 
@@ -15,52 +15,104 @@ A Python tool for analyzing Claude Code usage history, calculating token consump
 
 ## Installation
 
-### Requirements
-- Python 3.8+
-- Dependencies: `rich`, `pyyaml`
-
-### Quick Setup
+### Quick Install (One-liner)
 
 ```bash
-# Install dependencies
-pip install rich pyyaml
-
-# Or using uv (recommended)
-uv pip install rich pyyaml
+# Auto-detect best installation method for your system
+curl -sSL https://raw.githubusercontent.com/keakon/claude-code-cost/main/install.sh | bash
 ```
+
+### Option 1: Install from PyPI (Recommended)
+
+#### Using uv (Recommended - Modern & Fast)
+```bash
+# Install uv if you don't have it
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Install as a global tool
+uv tool install claude-code-cost
+
+# Run the command
+ccc
+```
+
+#### Using pipx (Traditional alternative)
+```bash
+# Install pipx if you don't have it
+brew install pipx  # macOS
+# or: python -m pip install --user pipx  # Linux/Windows
+
+# Install claude-code-cost as an isolated tool
+pipx install claude-code-cost
+
+# Now you can run from anywhere
+ccc
+```
+
+#### Using pip with virtual environment
+```bash
+# Create a dedicated virtual environment
+python -m venv ~/.venvs/claude-cost
+source ~/.venvs/claude-cost/bin/activate  # Linux/macOS
+# or: ~/.venvs/claude-cost/Scripts/activate  # Windows
+
+pip install claude-code-cost
+ccc
+```
+
+### Option 2: Install from Source
+
+```bash
+# Clone the repository
+git clone https://github.com/keakon/claude-code-cost.git
+cd claude-code-cost
+
+# Install in development mode
+uv pip install -e .
+
+# Or using pip
+pip install -e .
+```
+
+### Requirements
+- Python 3.8+
+- Dependencies: `rich`, `pyyaml` (installed automatically)
 
 ## Usage
 
 ### Basic Usage
 
 ```bash
-# Analyze with default settings
+# Analyze with default settings (after installing from PyPI)
+ccc
+
+# Or if installed from source
 python main.py
 
 # Specify custom data directory
-python main.py --data-dir /path/to/.claude/projects
+ccc --data-dir /path/to/.claude/projects
 ```
 
 ### Advanced Options
 
 ```bash
 # Customize display limits
-python main.py --max-days 7 --max-projects 5
+ccc --max-days 7 --max-projects 5
 
 # Show all data
-python main.py --max-days 0 --max-projects 0
+ccc --max-days 0 --max-projects 0
 
 # Display costs in Chinese Yuan (CNY)
-python main.py --currency CNY
+ccc --currency CNY
 
 # Use custom exchange rate
-python main.py --currency CNY --usd-to-cny 7.3
+ccc --currency CNY --usd-to-cny 7.3
 
 # Export to JSON
-python main.py --export-json report.json
+ccc --export-json report.json
 
 # Debug mode
-python main.py --log-level DEBUG
+ccc --log-level DEBUG
 ```
 
 ## Output Sections
@@ -73,11 +125,25 @@ The tool displays up to 5 main sections:
 4. **Project Rankings**: Top projects by cost
 5. **Model Statistics**: Individual model consumption and ranking (shown when using 2+ models)
 
-## Model Pricing
+## Configuration
 
-Configure model pricing in `model_pricing.yaml`:
+The tool comes with built-in default pricing for all supported models, but you can customize pricing by creating a user configuration file.
 
-```yaml
+### Custom Configuration
+
+Create a configuration file at `~/.claude-code-cost/model_pricing.yaml` to override default settings:
+
+```bash
+# Create config directory
+mkdir -p ~/.claude-code-cost
+
+# Create your custom configuration
+cat > ~/.claude-code-cost/model_pricing.yaml << 'EOF'
+# Custom model pricing configuration
+currency:
+  usd_to_cny: 7.3        # Exchange rate
+  display_unit: "USD"    # Default display currency
+
 pricing:
   sonnet:
     input_per_million: 3.0
@@ -111,11 +177,21 @@ pricing:
       - # >256K tokens (unlimited tier)
         input_per_million: 20.0
         output_per_million: 200.0
-
-currency:
-  usd_to_cny: 7.3
-  display_unit: "USD"
+EOF
 ```
+
+### Built-in Models
+
+The tool includes built-in pricing for:
+- **Claude Models**: Sonnet, Opus
+- **Gemini Models**: 1.5-Pro, 2.5-Pro (with tier pricing)
+- **Qwen Models**: Qwen3-Coder (with CNY pricing and tier structure)
+
+### Configuration Priority
+
+1. **Built-in defaults**: Always available as fallback
+2. **Package configuration**: Included with the package
+3. **User configuration**: `~/.claude-code-cost/model_pricing.yaml` (highest priority)
 
 ## Command Line Options
 
