@@ -7,18 +7,14 @@ for different AI models with support for multi-tier pricing and currencies.
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Dict, Optional
 
 try:
     # Python 3.9+
     from importlib.resources import files
 except ImportError:
-    # Python 3.8 fallback
-    try:
-        from importlib_resources import files
-    except ImportError:
-        # Ultimate fallback - use __file__ method
-        files = None
+    # Fallback - use __file__ method
+    files = None
 
 import yaml
 
@@ -139,7 +135,7 @@ def load_full_config(config_file: str = "model_pricing.yaml") -> Dict:
                 logger.warning(f"Unable to load user configuration file {user_config_path}", exc_info=True)
 
     except Exception:
-        logger.warning(f"Error occurred during configuration file loading, using default configuration", exc_info=True)
+        logger.warning("Error occurred during configuration file loading, using default configuration", exc_info=True)
 
     return config
 

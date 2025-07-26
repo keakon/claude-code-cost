@@ -7,7 +7,7 @@ Supports English and Chinese with automatic system language detection.
 
 import locale
 import os
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 
 class I18n:
@@ -17,7 +17,7 @@ class I18n:
     for all user-facing text in the application.
     """
     
-    def __init__(self, language: str = None):
+    def __init__(self, language: Optional[str] = None):
         self.language = language or self._detect_language()
         self.translations = self._load_translations()
     
@@ -45,7 +45,7 @@ class I18n:
                 # Detect Chinese variants
                 if any(chinese in system_locale for chinese in ['zh_cn', 'zh_tw', 'zh_hk', 'zh_sg', 'chinese']):
                     return 'zh'
-        except:
+        except Exception:
             pass
         
         # Default to English
@@ -223,7 +223,7 @@ class I18n:
 # Global instance
 _i18n_instance = None
 
-def get_i18n(language: str = None) -> I18n:
+def get_i18n(language: Optional[str] = None) -> I18n:
     """Get or create the global internationalization instance
     
     Uses singleton pattern to ensure consistent language settings

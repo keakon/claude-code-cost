@@ -15,7 +15,7 @@ from rich.table import Table
 
 from .billing import calculate_model_cost, load_currency_config, load_model_pricing
 from .models import DailyStats, ModelStats, ProjectStats
-from .i18n import get_i18n, t
+from .i18n import get_i18n
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -27,7 +27,7 @@ DEFAULT_USD_TO_CNY = 7.0
 class ClaudeHistoryAnalyzer:
     """Analyzes Claude usage history from project files"""
 
-    def __init__(self, base_dir: Path, currency_config: Optional[Dict] = None, language: str = None):
+    def __init__(self, base_dir: Path, currency_config: Optional[Dict] = None, language: Optional[str] = None):
         self.base_dir = base_dir
         self.project_stats: Dict[str, ProjectStats] = {}
         self.daily_stats: Dict[str, DailyStats] = {}

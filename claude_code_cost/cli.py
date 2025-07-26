@@ -11,7 +11,7 @@ from pathlib import Path
 
 from claude_code_cost.analyzer import ClaudeHistoryAnalyzer
 from claude_code_cost.billing import load_currency_config
-from claude_code_cost.i18n import get_i18n, t
+from claude_code_cost.i18n import get_i18n
 
 
 def main():
