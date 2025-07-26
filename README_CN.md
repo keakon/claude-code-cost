@@ -2,9 +2,9 @@
 
 一个用于分析 Claude Code 使用历史的 Python 工具，计算跨项目和时间段的 Token 消耗和成本。
 
-![Claude Code 成本计算器](screenshot_cn.png)
-
 [English](README.md) | 中文
+
+![Claude Code 成本计算器](screenshot_cn.png)
 
 ## 功能特性
 

@@ -2,6 +2,8 @@
 
 A Python tool for analyzing Claude Code usage history, calculating token consumption and costs across projects and time periods.
 
+English | [中文](README_CN.md)
+
 ![Claude Code Cost Calculator](screenshot.png)
 
 ## Features
