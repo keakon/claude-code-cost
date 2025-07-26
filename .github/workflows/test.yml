@@ -19,27 +19,22 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     
-    - name: Install uv
-      uses: astral-sh/setup-uv@v3
-      with:
-        version: "latest"
-        
     - name: Set up Python ${{ matrix.python-version }}
-      run: uv python install ${{ matrix.python-version }}
-      
-    - name: Create virtual environment
-      run: uv venv --python ${{ matrix.python-version }}
-      
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+        
     - name: Install dependencies
-      run: uv pip install -e .
-      
-    - name: Install test dependencies
-      run: uv pip install pytest
+      run: |
+        python -m pip install --upgrade pip
+        pip install pyright>=1.1.403
+        pip install pytest
+        pip install -e .
       
     - name: Run type checking
       run: |
-        uv run pyright claude_code_cost/
-        uv run pyright tests/
+        pyright claude_code_cost/
+        pyright tests/
       
     - name: Create test data directory
       shell: bash
