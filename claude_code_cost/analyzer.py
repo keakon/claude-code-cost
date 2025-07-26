@@ -5,6 +5,7 @@ Core analysis class for parsing Claude project data and generating statistical r
 
 import json
 import logging
+import platform
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
@@ -19,7 +20,13 @@ from .i18n import get_i18n
 
 # Configure logging
 logger = logging.getLogger(__name__)
-console = Console()
+
+# Initialize console with Windows compatibility
+if platform.system() == "Windows":
+    # Use legacy Windows console mode to avoid encoding issues in CI
+    console = Console(force_terminal=False, legacy_windows=True)
+else:
+    console = Console()
 
 DEFAULT_USD_TO_CNY = 7.0
 
@@ -46,8 +53,15 @@ class ClaudeHistoryAnalyzer:
     def _format_cost(self, cost: float) -> str:
         """Format cost for display with appropriate currency symbol"""
         converted_cost = self._convert_currency(cost)
-        currency_symbol = "¥" if self.currency_config.get("display_unit", "USD") == "CNY" else "$"
-        return f"{currency_symbol}{converted_cost:.2f}"
+        display_unit = self.currency_config.get("display_unit", "USD")
+        
+        # Use ASCII-compatible currency symbols on Windows to avoid encoding issues
+        if platform.system() == "Windows":
+            currency_symbol = "CNY" if display_unit == "CNY" else "USD"
+            return f"{converted_cost:.2f} {currency_symbol}"
+        else:
+            currency_symbol = "¥" if display_unit == "CNY" else "$"
+            return f"{currency_symbol}{converted_cost:.2f}"
 
     def analyze_directory(self, base_dir: Path) -> None:
         """Analyze all JSONL files in Claude projects directory structure

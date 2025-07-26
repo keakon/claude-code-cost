@@ -52,23 +52,33 @@ jobs:
         python tests\generate_test_data.py test_data\.claude\projects
         
     - name: Run basic functionality test
+      env:
+        PYTHONIOENCODING: utf-8
       run: |
         python -m claude_code_cost.cli --data-dir test_data/.claude/projects --log-level INFO --max-days 0 --max-projects 0
         
     - name: Run comprehensive verification tests
+      env:
+        PYTHONIOENCODING: utf-8
       run: |
         python tests/test_verification.py
         
     - name: Test JSON export
+      env:
+        PYTHONIOENCODING: utf-8
       run: |
         python -m claude_code_cost.cli --data-dir test_data/.claude/projects --export-json test_output.json
         
     - name: Test currency conversion
+      env:
+        PYTHONIOENCODING: utf-8
       run: |
         python -m claude_code_cost.cli --data-dir test_data/.claude/projects --currency USD --log-level INFO
         python -m claude_code_cost.cli --data-dir test_data/.claude/projects --currency CNY --usd-to-cny 7.0 --log-level INFO
         
     - name: Test language options
+      env:
+        PYTHONIOENCODING: utf-8
       run: |
         python -m claude_code_cost.cli --data-dir test_data/.claude/projects --language en --log-level INFO
         python -m claude_code_cost.cli --data-dir test_data/.claude/projects --language zh --log-level INFO
