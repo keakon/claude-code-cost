@@ -127,8 +127,8 @@ def generate_test_data(base_dir: str):
     project5_data = create_project_data("test-project-edge-cases", project5_messages)
     write_project_file(base_path, "test-project-edge-cases", project5_data)
     
-    print(f"✅ Generated test data in: {base_path}")
-    print(f"📁 Created {len(list(base_path.iterdir()))} test projects")
+    print(f"[OK] Generated test data in: {base_path}")
+    print(f"[INFO] Created {len(list(base_path.iterdir()))} test projects")
     
     # Verify the structure
     total_files = 0
@@ -136,9 +136,9 @@ def generate_test_data(base_dir: str):
         if project_dir.is_dir():
             files = list(project_dir.glob("*.jsonl"))
             total_files += len(files)
-            print(f"   📄 {project_dir.name}: {len(files)} JSONL files")
+            print(f"   [FILE] {project_dir.name}: {len(files)} JSONL files")
     
-    print(f"📊 Total test files: {total_files}")
+    print(f"[STATS] Total test files: {total_files}")
 
 
 def main():
@@ -152,9 +152,9 @@ def main():
     
     try:
         generate_test_data(output_dir)
-        print("\n🎉 Test data generation completed successfully!")
+        print("\n[SUCCESS] Test data generation completed successfully!")
     except Exception as e:
-        print(f"❌ Error generating test data: {e}")
+        print(f"[ERROR] Error generating test data: {e}")
         sys.exit(1)
 
 
