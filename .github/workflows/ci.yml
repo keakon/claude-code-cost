@@ -3,8 +3,26 @@ name: Code Quality
 on:
   push:
     branches: [ main, develop ]
+    paths-ignore:
+      - '*.md'
+      - '*.png'
+      - '*.jpg'
+      - '*.jpeg'
+      - '*.gif'
+      - '*.svg'
+      - 'docs/**'
+      - 'screenshot*'
   pull_request:
     branches: [ main ]
+    paths-ignore:
+      - '*.md'
+      - '*.png'
+      - '*.jpg'
+      - '*.jpeg'
+      - '*.gif'
+      - '*.svg'
+      - 'docs/**'
+      - 'screenshot*'
 
 jobs:
   type-check:
