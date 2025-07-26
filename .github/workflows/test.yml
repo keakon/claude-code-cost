@@ -1,0 +1,95 @@
+name: Cross-platform Testing
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.8", "3.9", "3.10", "3.11", "3.12", "3.13"]
+        
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install uv
+      uses: astral-sh/setup-uv@v3
+      with:
+        version: "latest"
+        
+    - name: Set up Python ${{ matrix.python-version }}
+      run: uv python install ${{ matrix.python-version }}
+      
+    - name: Create virtual environment
+      run: uv venv --python ${{ matrix.python-version }}
+      
+    - name: Install dependencies
+      run: uv pip install -e .
+      
+    - name: Install test dependencies
+      run: uv pip install pytest
+      
+    - name: Run type checking
+      run: |
+        uv run pyright claude_code_cost/
+        uv run pyright tests/
+      
+    - name: Create test data directory
+      shell: bash
+      run: |
+        mkdir -p test_data/.claude/projects
+        
+    - name: Generate test data (Unix)
+      if: runner.os != 'Windows'
+      run: |
+        python tests/generate_test_data.py test_data/.claude/projects
+        
+    - name: Generate test data (Windows)
+      if: runner.os == 'Windows'
+      run: |
+        python tests\generate_test_data.py test_data\.claude\projects
+        
+    - name: Run basic functionality test
+      run: |
+        python -m claude_code_cost.cli --data-dir test_data/.claude/projects --log-level INFO --max-days 0 --max-projects 0
+        
+    - name: Run comprehensive verification tests
+      run: |
+        python tests/test_verification.py
+        
+    - name: Test JSON export
+      run: |
+        python -m claude_code_cost.cli --data-dir test_data/.claude/projects --export-json test_output.json
+        
+    - name: Test currency conversion
+      run: |
+        python -m claude_code_cost.cli --data-dir test_data/.claude/projects --currency USD --log-level INFO
+        python -m claude_code_cost.cli --data-dir test_data/.claude/projects --currency CNY --usd-to-cny 7.0 --log-level INFO
+        
+    - name: Test language options
+      run: |
+        python -m claude_code_cost.cli --data-dir test_data/.claude/projects --language en --log-level INFO
+        python -m claude_code_cost.cli --data-dir test_data/.claude/projects --language zh --log-level INFO
+        
+    - name: Verify JSON output exists
+      shell: bash
+      run: |
+        if [ ! -f test_output.json ]; then
+          echo "JSON export failed"
+          exit 1
+        fi
+        echo "JSON export successful"
+        
+    - name: Clean up test files
+      if: always()
+      shell: bash
+      run: |
+        rm -rf test_data
+        rm -f test_output.json
