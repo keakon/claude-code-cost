@@ -2,7 +2,7 @@
 
 一个用于分析 Claude Code 使用历史的 Python 工具，计算跨项目和时间段的 Token 消耗和成本。
 
-![Claude Code 成本计算器](screenshot.png)
+![Claude Code 成本计算器](screenshot_cn.png)
 
 [English](README.md) | 中文
 
@@ -79,7 +79,7 @@ pip install -e .
 
 ### 系统要求
 - Python 3.8+
-- 依赖库：`rich`、`pyyaml`（自动安装）
+- 依赖库：`rich`、`pyyaml`
 
 ## 使用方法
 
@@ -166,8 +166,8 @@ pricing:
       - threshold: 200000    # ≤200K tokens
         input_per_million: 1.25
         output_per_million: 10.0
-      - # >200K tokens (无上限)
-        input_per_million: 2.50
+      - # >200K tokens
+        input_per_million: 2.5
         output_per_million: 15.0
 
   qwen3-coder:
@@ -183,7 +183,7 @@ pricing:
       - threshold: 256000    # ≤256K tokens
         input_per_million: 10.0
         output_per_million: 40.0
-      - # >256K tokens (无上限)
+      - # >256K tokens
         input_per_million: 20.0
         output_per_million: 200.0
 EOF
@@ -225,6 +225,10 @@ EOF
 ## 贡献
 
 欢迎贡献！请随时提交 issue 和 pull request。
+
+## 代码贡献
+
+本项目约 99% 的代码由 [Claude Code](https://claude.ai/code) 生成。
 
 ## 许可证
 

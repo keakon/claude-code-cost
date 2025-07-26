@@ -1,43 +1,62 @@
+"""Internationalization support for multiple languages
+
+Provides language detection and translation management for the CLI interface.
+Supports English and Chinese with automatic system language detection.
+"""
+
+
 import locale
 import os
 from typing import Dict, Any
 
 
 class I18n:
-    """国际化支持类"""
+    """Handles language detection and translations
+    
+    Automatically detects system language and provides translations
+    for all user-facing text in the application.
+    """
     
     def __init__(self, language: str = None):
         self.language = language or self._detect_language()
         self.translations = self._load_translations()
     
     def _detect_language(self) -> str:
-        """自动检测系统语言"""
-        # 优先检查环境变量
+        """Auto-detect system language from environment variables and locale
+        
+        Checks LANG, LC_ALL, LC_MESSAGES environment variables and system locale
+        for Chinese language indicators. Defaults to English if not detected.
+        """
+        # Check environment variables first
         lang_env = os.environ.get('LANG', '').lower()
         lc_all = os.environ.get('LC_ALL', '').lower()
         lc_messages = os.environ.get('LC_MESSAGES', '').lower()
         
-        # 检查环境变量中的中文
+        # Check for Chinese in environment variables
         for env_var in [lang_env, lc_all, lc_messages]:
             if any(chinese in env_var for chinese in ['zh_cn', 'zh_tw', 'zh_hk', 'zh_sg', 'chinese']):
                 return 'zh'
         
-        # 使用locale模块检测
+        # Use locale module for detection
         try:
             system_locale = locale.getdefaultlocale()[0]
             if system_locale:
                 system_locale = system_locale.lower()
-                # 检测中文变体
+                # Detect Chinese variants
                 if any(chinese in system_locale for chinese in ['zh_cn', 'zh_tw', 'zh_hk', 'zh_sg', 'chinese']):
                     return 'zh'
         except:
             pass
         
-        # 默认使用英文
+        # Default to English
         return 'en'
     
     def _load_translations(self) -> Dict[str, Any]:
-        """加载翻译字典"""
+        """Load complete translation dictionary for all supported languages
+        
+        Returns a nested dictionary with language codes as keys and
+        translation keys/values as the inner dictionaries.
+        """
         translations = {
             'en': {
                 # Help and descriptions
@@ -181,13 +200,13 @@ class I18n:
         return translations
     
     def t(self, key: str, **kwargs) -> str:
-        """获取翻译文本"""
+        """Get translated text"""
         translation = self.translations.get(self.language, {}).get(key)
         if translation is None:
-            # 回退到英文
+            # Fall back to English
             translation = self.translations.get('en', {}).get(key, key)
         
-        # 支持格式化参数
+        # Support format parameters
         if kwargs:
             try:
                 return translation.format(**kwargs)
@@ -196,21 +215,25 @@ class I18n:
         return translation
     
     def set_language(self, language: str):
-        """设置语言"""
+        """Set language"""
         if language in self.translations:
             self.language = language
 
 
-# 全局实例
+# Global instance
 _i18n_instance = None
 
 def get_i18n(language: str = None) -> I18n:
-    """获取国际化实例"""
+    """Get or create the global internationalization instance
+    
+    Uses singleton pattern to ensure consistent language settings
+    across the entire application.
+    """
     global _i18n_instance
     if _i18n_instance is None or language:
         _i18n_instance = I18n(language)
     return _i18n_instance
 
 def t(key: str, **kwargs) -> str:
-    """便捷的翻译函数"""
+    """Convenient translation function"""
     return get_i18n().t(key, **kwargs)

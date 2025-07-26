@@ -1,10 +1,20 @@
+"""Data models for Claude usage statistics
+
+Defines dataclasses that represent different levels of usage statistics:
+project-level, daily aggregates, and per-model breakdowns.
+"""
+
+
 from dataclasses import dataclass, field
 from typing import Dict, Optional
 
 
 @dataclass
 class ProjectStats:
-    """项目统计数据"""
+    """Statistics for a single Claude project
+    
+    Tracks token usage, costs, and metadata for one project across its lifetime.
+    """
 
     project_name: str = ""
     total_input_tokens: int = 0
@@ -19,12 +29,16 @@ class ProjectStats:
 
     @property
     def total_tokens(self) -> int:
+        """Total tokens consumed (input + output)"""
         return self.total_input_tokens + self.total_output_tokens
 
 
 @dataclass
 class ModelStats:
-    """模型统计数据"""
+    """Statistics for a specific AI model across all projects
+    
+    Aggregates usage and costs for one model (e.g., 'sonnet', 'opus') globally.
+    """
 
     model_name: str = ""
     total_input_tokens: int = 0
@@ -36,12 +50,16 @@ class ModelStats:
 
     @property
     def total_tokens(self) -> int:
+        """Total tokens consumed (input + output)"""
         return self.total_input_tokens + self.total_output_tokens
 
 
 @dataclass
 class DailyStats:
-    """每日统计数据"""
+    """Statistics aggregated by calendar date
+    
+    Contains total usage for one day plus breakdowns by project and model.
+    """
 
     date: str = ""
     total_input_tokens: int = 0
@@ -56,4 +74,5 @@ class DailyStats:
 
     @property
     def total_tokens(self) -> int:
+        """Total tokens consumed (input + output)"""
         return self.total_input_tokens + self.total_output_tokens

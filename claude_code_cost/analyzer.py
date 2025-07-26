@@ -1,7 +1,6 @@
-"""
-Claude历史记录分析器
+"""Claude History Analyzer
 
-从main.py提取的核心分析类，负责解析Claude项目数据并生成统计报告。
+Core analysis class for parsing Claude project data and generating statistical reports.
 """
 
 import json
@@ -18,7 +17,7 @@ from .billing import calculate_model_cost, load_currency_config, load_model_pric
 from .models import DailyStats, ModelStats, ProjectStats
 from .i18n import get_i18n, t
 
-# 配置日志
+# Configure logging
 logger = logging.getLogger(__name__)
 console = Console()
 
@@ -26,7 +25,7 @@ DEFAULT_USD_TO_CNY = 7.0
 
 
 class ClaudeHistoryAnalyzer:
-    """Claude历史记录分析器"""
+    """Analyzes Claude usage history from project files"""
 
     def __init__(self, base_dir: Path, currency_config: Optional[Dict] = None, language: str = None):
         self.base_dir = base_dir
@@ -35,30 +34,34 @@ class ClaudeHistoryAnalyzer:
         self.model_stats: Dict[str, ModelStats] = {}
         self.pricing_config = load_model_pricing()
         self.currency_config = currency_config or load_currency_config()
-        self.model_config_cache: Dict[str, Dict] = {}  # 模型匹配缓存
+        self.model_config_cache: Dict[str, Dict] = {}  # Cache for model configuration lookups
         self.i18n = get_i18n(language)
 
     def _convert_currency(self, amount: float) -> float:
-        """根据配置转换货币"""
+        """Convert amount to display currency based on configuration"""
         if self.currency_config.get("display_unit", "USD") == "CNY":
             return amount * self.currency_config.get("usd_to_cny", DEFAULT_USD_TO_CNY)
         return amount
 
     def _format_cost(self, cost: float) -> str:
-        """格式化成本显示"""
+        """Format cost for display with appropriate currency symbol"""
         converted_cost = self._convert_currency(cost)
         currency_symbol = "¥" if self.currency_config.get("display_unit", "USD") == "CNY" else "$"
         return f"{currency_symbol}{converted_cost:.2f}"
 
     def analyze_directory(self, base_dir: Path) -> None:
-        """分析指定目录及其子目录中的所有JSONL文件"""
+        """Analyze all JSONL files in Claude projects directory structure
+        
+        Scans for project directories (starting with '-') and processes JSONL files
+        containing Claude conversation history to extract token usage and costs.
+        """
         if not base_dir.exists():
             logger.error(self.i18n.t('directory_not_exist', path=base_dir))
             return
 
         logger.info(self.i18n.t('analysis_start', path=base_dir))
 
-        # 查找所有项目目录
+        # Find project directories (Claude stores projects in dirs starting with '-')
         project_dirs = [d for d in base_dir.iterdir() if d.is_dir() and d.name.startswith("-")]
 
         if not project_dirs:
@@ -71,14 +74,14 @@ class ClaudeHistoryAnalyzer:
         for project_dir in project_dirs:
             project_name = self._extract_project_name_from_dir(project_dir.name)
 
-            # 分析项目目录
+            # Process each project directory for JSONL files
             files_processed, messages_processed = self._analyze_single_directory(project_dir, project_name)
             total_files += files_processed
             total_messages += messages_processed
 
         logger.info(self.i18n.t('analysis_complete', projects=len(project_dirs), files=total_files, messages=total_messages))
 
-        # 验证分析结果
+        # Validate analysis results and log summary
         if not self.project_stats:
             logger.warning(self.i18n.t('no_data_found'))
         elif total_messages == 0:
@@ -86,17 +89,21 @@ class ClaudeHistoryAnalyzer:
         else:
             logger.info(self.i18n.t('projects_analyzed', count=len(self.project_stats)))
 
-        # 分析完成后，设置活跃项目数
+        # Set active project count for daily statistics
         for daily_stats in self.daily_stats.values():
             daily_stats.projects_active = len(daily_stats.project_breakdown)
 
     def _extract_project_name_from_dir(self, dir_name: str) -> str:
-        """从目录名提取项目名称"""
-        # 特殊处理claude projects目录
+        """Extract readable project name from Claude's directory naming scheme
+        
+        Claude uses directory names like '-Users-username-Workspace-projectname'
+        This method extracts meaningful project names for display.
+        """
+        # Special handling for claude projects directory
         if "claude" in dir_name.lower() and "projects" in dir_name.lower():
             return ".claude/projects"
 
-        # 首先尝试从JSONL文件中读取真实的项目路径
+        # Try to read actual project path from JSONL files first (most accurate)
         project_dir = self.base_dir / dir_name
         if project_dir.exists():
             for jsonl_file in project_dir.glob("*.jsonl"):
@@ -107,30 +114,31 @@ class ClaudeHistoryAnalyzer:
                             data = json.loads(first_line)
                             if "cwd" in data:
                                 cwd_path = data["cwd"]
-                                # 提取项目名称 (路径的最后一部分)
+                                # Use the actual project directory name from file
                                 project_name = Path(cwd_path).name
                                 if project_name:
                                     return project_name
                 except (json.JSONDecodeError, IOError, KeyError):
                     continue
 
-        # 如果无法从JSONL文件获取，回退到原有逻辑
-        # 目录名格式通常是 -Users-username-Workspace-projectname
-        # 提取最后的项目名称部分
+        # Fallback: Parse directory name using Claude's naming convention
+        # Directory name format is usually -Users-username-Workspace-projectname
+        # Extract project name from path segments
         if "-Workspace-" in dir_name:
             project_name = dir_name.split("-Workspace-", 1)[1]
-            # 处理特殊的空项目名或横线项目名
+            # Handle edge cases with empty or generic names
             if not project_name or project_name in ["", "-----", "------"]:
                 return "Workspace"
 
-            # 优化路径显示：如果太长使用省略号，但保持最后段完整
+            # Shorten long paths while keeping the final directory visible
+            # Example: "project-subdir-subdir2-final" -> "project/.../final"
             path_parts = project_name.replace("-", "/").split("/")
             if len(path_parts) > 3:
                 return f"{path_parts[0]}/.../{path_parts[-1]}"
             else:
                 return project_name.replace("-", "/")
 
-        # 如果没有Workspace标识，提取用户名后的部分
+        # Alternative parsing for non-Workspace paths
         parts = dir_name.split("-")
         if len(parts) >= 3:  # -Users-username-...
             path_parts = parts[3:] if len(parts) > 3 else [parts[2]]
@@ -142,7 +150,7 @@ class ClaudeHistoryAnalyzer:
         return dir_name.lstrip("-")
 
     def _analyze_single_directory(self, directory: Path, project_name: str) -> tuple[int, int]:
-        """分析单个目录中的JSONL文件"""
+        """Analyze JSONL files in a single directory"""
         if project_name not in self.project_stats:
             self.project_stats[project_name] = ProjectStats(project_name=project_name)
 
@@ -167,10 +175,14 @@ class ClaudeHistoryAnalyzer:
         return files_processed, messages_processed
 
     def _process_jsonl_file(self, file_path: Path, project_stats: ProjectStats) -> int:
-        """处理单个JSONL文件"""
+        """Process a single JSONL file containing Claude conversation history
+        
+        Each line in the JSONL file represents one message in the conversation.
+        We extract token usage and cost information from assistant messages.
+        """
         messages_processed = 0
 
-        # 获取文件创建时间作为备用日期
+        # Use file creation time as fallback when timestamp parsing fails
         try:
             file_stat = file_path.stat()
             file_creation_time = datetime.fromtimestamp(file_stat.st_ctime)
@@ -203,11 +215,11 @@ class ClaudeHistoryAnalyzer:
         return messages_processed
 
     def _convert_utc_to_local(self, utc_timestamp_str: str) -> str:
-        """将UTC时间戳转换为本地时区的日期字符串"""
+        """Convert UTC timestamp from Claude logs to local timezone date"""
         try:
-            # 解析UTC时间戳
+            # Parse UTC timestamp
             utc_dt = datetime.fromisoformat(utc_timestamp_str.replace("Z", "+00:00"))
-            # 转换为本地时区
+            # Convert to local timezone
             local_dt = utc_dt.astimezone()
             return local_dt.strftime("%Y-%m-%d")
         except Exception:
@@ -217,8 +229,15 @@ class ClaudeHistoryAnalyzer:
     def _process_message(
         self, data: Dict[str, Any], project_stats: ProjectStats, fallback_date: str = "unknown"
     ) -> bool:
-        """处理单条消息数据"""
-        # 只处理assistant类型的消息
+        """Process a single message from Claude conversation log
+        
+        Extracts token usage, calculates costs, and updates statistics.
+        Only processes 'assistant' type messages as they contain usage data.
+        
+        Returns:
+            bool: True if message was successfully processed, False otherwise
+        """
+        # We only track assistant messages as they contain token usage information
         if data.get("type") != "assistant":
             return False
 
@@ -232,7 +251,7 @@ class ClaudeHistoryAnalyzer:
             logger.debug(self.i18n.t('missing_usage_info'))
             return False
 
-        # 提取token使用信息
+        # Parse token counts from usage field
         try:
             input_tokens = int(usage.get("input_tokens") or 0)
             output_tokens = int(usage.get("output_tokens") or 0)
@@ -245,12 +264,12 @@ class ClaudeHistoryAnalyzer:
         if input_tokens == 0 and output_tokens == 0:
             return False
 
-        # 提取模型信息
+        # Get model identifier for cost calculation
         model_name = message.get("model", "unknown")
         if not model_name or model_name == "unknown":
             logger.debug(self.i18n.t('missing_model_info'))
 
-        # 提取时间戳并转换为本地时区，失败时使用备用日期
+        # Convert UTC timestamp to local date, use file date as fallback
         timestamp_str = data.get("timestamp", "")
         if timestamp_str:
             date_str = self._convert_utc_to_local(timestamp_str)
@@ -261,7 +280,7 @@ class ClaudeHistoryAnalyzer:
             logger.debug(self.i18n.t('missing_timestamp_info'))
             date_str = fallback_date
 
-        # 计算该消息的成本
+        # Calculate cost using model-specific pricing
         try:
             message_cost = calculate_model_cost(
                 model_name,
@@ -277,28 +296,28 @@ class ClaudeHistoryAnalyzer:
             logger.exception(self.i18n.t('cost_calculation_error'))
             message_cost = 0.0
 
-        # 更新项目统计
+        # Update project-level statistics
         project_stats.total_input_tokens += input_tokens
         project_stats.total_output_tokens += output_tokens
         project_stats.total_cache_read_tokens += cache_read_tokens
         project_stats.total_cache_creation_tokens += cache_creation_tokens
         project_stats.total_messages += 1
-        project_stats.total_cost += message_cost  # 直接累积成本
+        project_stats.total_cost += message_cost  # Cost is in USD
 
-        # 更新模型使用统计
+        # Track which models are used by this project
         if model_name in project_stats.models_used:
             project_stats.models_used[model_name] += 1
         else:
             project_stats.models_used[model_name] = 1
 
-        # 更新日期范围
+        # Track date range of project activity
         if date_str != "unknown":
             if not project_stats.first_message_date or date_str < project_stats.first_message_date:
                 project_stats.first_message_date = date_str
             if not project_stats.last_message_date or date_str > project_stats.last_message_date:
                 project_stats.last_message_date = date_str
 
-        # 更新每日统计
+        # Update daily aggregated statistics
         if date_str not in self.daily_stats:
             self.daily_stats[date_str] = DailyStats(date=date_str)
 
@@ -308,15 +327,15 @@ class ClaudeHistoryAnalyzer:
         daily_stats.total_cache_read_tokens += cache_read_tokens
         daily_stats.total_cache_creation_tokens += cache_creation_tokens
         daily_stats.total_messages += 1
-        daily_stats.total_cost += message_cost  # 直接累积成本
+        daily_stats.total_cost += message_cost  # Cost is in USD
 
-        # 更新每日模型使用统计
+        # Track daily model usage
         if model_name in daily_stats.models_used:
             daily_stats.models_used[model_name] += 1
         else:
             daily_stats.models_used[model_name] = 1
 
-        # 更新每日项目统计
+        # Update per-project breakdown within daily stats
         if project_stats.project_name not in daily_stats.project_breakdown:
             daily_stats.project_breakdown[project_stats.project_name] = ProjectStats(
                 project_name=project_stats.project_name
@@ -328,14 +347,14 @@ class ClaudeHistoryAnalyzer:
         daily_project_stats.total_cache_read_tokens += cache_read_tokens
         daily_project_stats.total_cache_creation_tokens += cache_creation_tokens
         daily_project_stats.total_messages += 1
-        daily_project_stats.total_cost += message_cost  # 直接累积成本
+        daily_project_stats.total_cost += message_cost  # Cost is in USD
 
         if model_name in daily_project_stats.models_used:
             daily_project_stats.models_used[model_name] += 1
         else:
             daily_project_stats.models_used[model_name] = 1
 
-        # 更新模型统计
+        # Update global model statistics across all projects
         if model_name not in self.model_stats:
             self.model_stats[model_name] = ModelStats(model_name=model_name)
 
@@ -350,20 +369,23 @@ class ClaudeHistoryAnalyzer:
         return True
 
     def _generate_rich_report(self, max_days=10, max_projects=10) -> None:
-        """生成Rich格式的统计报告
-
+        """Generate formatted terminal report using Rich library
+        
+        Creates up to 5 sections: overall stats, today's usage, daily trends,
+        project rankings, and model comparisons. Intelligently hides empty sections.
+        
         Args:
-            max_days: 每日统计显示的最大天数，0表示全部
-            max_projects: 项目统计显示的最大项目数，0表示全部
+            max_days: Maximum days to show in daily stats (0 = all)
+            max_projects: Maximum projects to show in rankings (0 = all)
         """
-        # 获取有效项目（排除空项目）
+        # Filter out projects with no token usage
         valid_projects = [p for p in self.project_stats.values() if p.total_tokens > 0]
 
         if not valid_projects:
             console.print(f"[red]{self.i18n.t('no_data_found')}[/red]")
             return
 
-        # 计算总体统计
+        # Aggregate statistics across all valid projects
         total_input_tokens = sum(p.total_input_tokens for p in valid_projects)
         total_output_tokens = sum(p.total_output_tokens for p in valid_projects)
         total_cache_read_tokens = sum(p.total_cache_read_tokens for p in valid_projects)
@@ -371,7 +393,7 @@ class ClaudeHistoryAnalyzer:
         total_cost = sum(p.total_cost for p in valid_projects)
         total_messages = sum(p.total_messages for p in valid_projects)
 
-        # 1. 总体统计摘要
+        # 1. Overall statistics summary
         summary_table = Table(title=self.i18n.t('overall_stats'), box=box.ROUNDED, show_header=True, header_style="bold cyan")
         summary_table.add_column(self.i18n.t('metric'), style="cyan", no_wrap=True, width=20)
         summary_table.add_column(self.i18n.t('value'), style="yellow", justify="right", width=20)
@@ -387,7 +409,7 @@ class ClaudeHistoryAnalyzer:
         console.print("\n")
         console.print(summary_table)
 
-        # 3. 今日消耗统计表格（只在有Token开销时显示）
+        # Show today's usage only if there's actual activity with costs
         today_str = date.today().isoformat()
         today_stats = self.daily_stats.get(today_str)
         if today_stats and today_stats.project_breakdown and today_stats.total_cost > 0:
@@ -402,13 +424,13 @@ class ClaudeHistoryAnalyzer:
             today_table.add_column(self.i18n.t('messages'), style="red", justify="right", min_width=6)
             today_table.add_column(self.i18n.t('cost'), style="green", justify="right", min_width=8)
 
-            # 按成本排序今日项目
+            # Rank today's projects by cost to show highest spenders first
             sorted_today_projects = sorted(
                 today_stats.project_breakdown.values(), key=lambda x: x.total_cost, reverse=True
             )
 
             for project in sorted_today_projects:
-                if project.total_tokens > 0:  # 只显示有Token使用的项目
+                if project.total_tokens > 0:  # Only show projects with actual usage
                     today_table.add_row(
                         project.project_name,
                         self._format_number(project.total_input_tokens),
@@ -419,7 +441,7 @@ class ClaudeHistoryAnalyzer:
                         self._format_cost(project.total_cost),
                     )
 
-            # 添加总计行
+            # Add total row
             today_table.add_section()
             today_table.add_row(
                 self.i18n.t('total'),
@@ -434,11 +456,11 @@ class ClaudeHistoryAnalyzer:
             console.print("\n")
             console.print(today_table)
 
-        # 4. 每日消耗统计（只显示有数据的日期，且需有今天以外的数据）
+        # Show historical daily trends (exclude today, require historical data)
         valid_daily_stats = {k: v for k, v in self.daily_stats.items() if v.total_tokens > 0}
         today_str = date.today().isoformat()
 
-        # 排除今天的数据，检查是否有历史数据
+        # Only show daily trends if we have historical data beyond today
         historical_stats = {k: v for k, v in valid_daily_stats.items() if k != today_str}
 
         if historical_stats:
@@ -455,16 +477,16 @@ class ClaudeHistoryAnalyzer:
             daily_table.add_column(self.i18n.t('cost'), style="green", justify="right", min_width=8)
             daily_table.add_column(self.i18n.t('active_projects'), style="orange3", justify="right", min_width=8)
 
-            # 生成最近N天的日期列表（排除今天）
+            # Generate date range for display
             today = date.today()
 
             if max_days > 0:
-                # 生成最近max_days天的日期列表（从昨天开始）
+                # Show last N days of data (excluding today)
                 date_list = [(today - timedelta(days=i + 1)).isoformat() for i in range(max_days)]
-                # 只保留有数据的日期
+                # Filter to only dates with actual data
                 date_list = [d for d in date_list if d in valid_daily_stats]
             else:
-                # 显示所有有数据的历史日期
+                # Show all historical data
                 date_list = sorted(historical_stats.keys(), reverse=True)
 
             for date_str in date_list:
@@ -483,7 +505,7 @@ class ClaudeHistoryAnalyzer:
             console.print("\n")
             console.print(daily_table)
 
-        # 5. 项目消耗统计表格（放在最后，只在有数据时显示）
+        # Show project rankings (always shown if we have valid projects)
         valid_projects = [p for p in self.project_stats.values() if p.total_tokens > 0]
         if valid_projects:
             title_suffix = f"({self.i18n.t('top_n', n=max_projects)})" if max_projects > 0 else f"({self.i18n.t('all_data')})"
@@ -498,9 +520,9 @@ class ClaudeHistoryAnalyzer:
             projects_table.add_column(self.i18n.t('messages'), style="red", justify="right", min_width=6)
             projects_table.add_column(self.i18n.t('cost'), style="green", justify="right", min_width=8)
 
-            # 按成本排序项目
+            # Rank projects by total cost
             sorted_projects = sorted(valid_projects, key=lambda x: x.total_cost, reverse=True)
-            # 限制显示项目数
+            # Apply display limit if specified
             if max_projects > 0:
                 sorted_projects = sorted_projects[:max_projects]
 
@@ -518,7 +540,7 @@ class ClaudeHistoryAnalyzer:
             console.print("\n")
             console.print(projects_table)
 
-        # 6. 模型消耗统计表格（只在有2种或以上模型时显示）
+        # Show model comparison only when using multiple models
         valid_models = [m for m in self.model_stats.values() if m.total_tokens > 0]
         if len(valid_models) >= 2:
             models_table = Table(
@@ -532,7 +554,7 @@ class ClaudeHistoryAnalyzer:
             models_table.add_column(self.i18n.t('messages'), style="red", justify="right", min_width=6)
             models_table.add_column(self.i18n.t('cost'), style="green", justify="right", min_width=8)
 
-            # 按成本排序模型
+            # Rank models by total cost
             sorted_models = sorted(valid_models, key=lambda x: x.total_cost, reverse=True)
 
             for model in sorted_models:
@@ -550,7 +572,7 @@ class ClaudeHistoryAnalyzer:
             console.print(models_table)
 
     def _format_number(self, num: int) -> str:
-        """格式化数字显示"""
+        """Format large numbers with K/M suffixes for readability"""
         if num >= 1_000_000:
             return f"{num/1_000_000:.1f}M"
         elif num >= 1_000:
@@ -559,8 +581,8 @@ class ClaudeHistoryAnalyzer:
             return str(num)
 
     def export_json(self, output_path: Path) -> None:
-        """导出分析结果为JSON格式"""
-        # 转换数据为可序列化格式
+        """Export analysis results to JSON file for external processing"""
+        # Structure data for JSON serialization
         export_data = {
             "analysis_timestamp": datetime.now().isoformat(),
             "project_stats": {},
@@ -578,7 +600,7 @@ class ClaudeHistoryAnalyzer:
             },
         }
 
-        # 转换项目统计
+        # Export project statistics
         for name, stats in self.project_stats.items():
             export_data["project_stats"][name] = {
                 "project_name": stats.project_name,
@@ -593,7 +615,7 @@ class ClaudeHistoryAnalyzer:
                 "last_message_date": stats.last_message_date,
             }
 
-        # 转换每日统计
+        # Export daily statistics with project breakdowns
         for date_str, stats in self.daily_stats.items():
             project_breakdown = {}
             for proj_name, proj_stats in stats.project_breakdown.items():
@@ -620,7 +642,7 @@ class ClaudeHistoryAnalyzer:
                 "project_breakdown": project_breakdown,
             }
 
-        # 转换模型统计
+        # Export model statistics
         for name, stats in self.model_stats.items():
             export_data["model_stats"][name] = {
                 "model_name": stats.model_name,
@@ -632,7 +654,7 @@ class ClaudeHistoryAnalyzer:
                 "total_cost": stats.total_cost,
             }
 
-        # 写入JSON文件
+        # Write formatted JSON to file
         with open(output_path, "w", encoding="utf-8") as f:
             json.dump(export_data, f, ensure_ascii=False, indent=2)
 

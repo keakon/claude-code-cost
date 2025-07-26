@@ -12,43 +12,45 @@ pricing:
   sonnet:
     input_per_million: 3.0
     output_per_million: 15.0
-    cache_read_per_million: 0.3     # 0.1x基础价格
-    cache_write_per_million: 3.75   # 1.25x基础价格
+    cache_read_per_million: 0.3
+    cache_write_per_million: 3.75
 
   opus:
     input_per_million: 15.0
     output_per_million: 75.0
-    cache_read_per_million: 1.5     # 0.1x基础价格
-    cache_write_per_million: 18.75  # 1.25x基础价格
+    cache_read_per_million: 1.5
+    cache_write_per_million: 18.75
 
   gemini-2.5-pro:
-    # Gemini 2.5 Pro分级定价：<=200K tokens 和 >200K tokens
     tiers:
-      - threshold: 200000    # ≤200K tokens (低档定价)
+      - threshold: 200000
         input_per_million: 1.25
         output_per_million: 10.0
-      - # >200K tokens (高档定价)
-        input_per_million: 2.50
+      - # >200K tokens
+        input_per_million: 2.5
         output_per_million: 15.0
 
   gemini-1.5-pro:
-    input_per_million: 1.25
-    output_per_million: 5.0
+    tiers:
+      - threshold: 128000
+        input_per_million: 1.25
+        output_per_million: 5.0
+      - # >128K tokens
+        input_per_million: 2.5
+        output_per_million: 10.0
 
   qwen3-coder:
-    # Qwen3-Coder-480B-A35B - 价格以人民币为基础单位（每百万Token）
-    # 原始价格单位为每千Token，已转换为每百万Token
     currency: "CNY"
     tiers:
-      - threshold: 32000     # ≤32K tokens
-        input_per_million: 4.0   # 4.0 CNY/千Token -> 4000 CNY/百万Token
-        output_per_million: 16.0 # 16.0 CNY/千Token -> 16000 CNY/百万Token
-      - threshold: 128000    # ≤128K tokens
-        input_per_million: 6.0   # 6.0 CNY/千Token -> 6000 CNY/百万Token
-        output_per_million: 24.0 # 24.0 CNY/千Token -> 24000 CNY/百万Token
-      - threshold: 256000    # ≤256K tokens
-        input_per_million: 10.0  # 10.0 CNY/千Token -> 10000 CNY/百万Token
-        output_per_million: 40.0 # 40.0 CNY/千Token -> 40000 CNY/百万Token
+      - threshold: 32000
+        input_per_million: 4.0
+        output_per_million: 16.0
+      - threshold: 128000
+        input_per_million: 6.0
+        output_per_million: 24.0
+      - threshold: 256000
+        input_per_million: 10.0
+        output_per_million: 40.0
       - # >256K tokens
-        input_per_million: 20.0  # 20.0 CNY/千Token -> 20000 CNY/百万Token
-        output_per_million: 200.0 # 200.0 CNY/千Token -> 200000 CNY/百万Token
+        input_per_million: 20.0
+        output_per_million: 200.0
