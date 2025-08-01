@@ -43,6 +43,11 @@ class ClaudeHistoryAnalyzer:
         self.currency_config = currency_config or load_currency_config()
         self.model_config_cache: Dict[str, Dict] = {}  # Cache for model configuration lookups
         self.i18n = get_i18n(language)
+        
+        # Deduplication tracking for repeated API responses
+        self.cache_creation_seen: set = set()  # Track seen cache creation patterns
+        self.cache_read_seen: set = set()      # Track seen cache read patterns
+        self.message_patterns_seen: set = set()  # Track seen input/output patterns
 
     def _convert_currency(self, amount: float) -> float:
         """Convert amount to display currency based on configuration"""
@@ -240,6 +245,63 @@ class ClaudeHistoryAnalyzer:
             logger.exception(self.i18n.t('timezone_conversion_error', timestamp=utc_timestamp_str))
             return "unknown"
 
+    def _is_duplicate_cache_creation(self, timestamp: str, cache_creation_tokens: int) -> bool:
+        """Check if cache creation tokens should be deduplicated
+        
+        Claude API sometimes reports the same cache creation multiple times
+        for streaming responses. We deduplicate by time window + token count.
+        """
+        if cache_creation_tokens <= 0:
+            return False
+        
+        # Use minute-level timestamp + token count as deduplication key
+        time_minute = timestamp[:16]  # YYYY-MM-DDTHH:MM
+        cache_key = f"{time_minute}_{cache_creation_tokens}"
+        
+        if cache_key in self.cache_creation_seen:
+            logger.debug(f"Duplicate cache creation detected: {timestamp} - {cache_creation_tokens:,} tokens")
+            return True
+        
+        self.cache_creation_seen.add(cache_key)
+        return False
+    
+    def _is_duplicate_cache_read(self, timestamp: str, cache_read_tokens: int) -> bool:
+        """Check if cache read tokens should be deduplicated
+        
+        Similar to cache creation, cache reads can be duplicated in streaming responses.
+        """
+        if cache_read_tokens <= 0:
+            return False
+        
+        # Use minute-level timestamp + token count as deduplication key  
+        time_minute = timestamp[:16]  # YYYY-MM-DDTHH:MM
+        cache_key = f"{time_minute}_{cache_read_tokens}"
+        
+        if cache_key in self.cache_read_seen:
+            logger.debug(f"Duplicate cache read detected: {timestamp} - {cache_read_tokens:,} tokens")
+            return True
+        
+        self.cache_read_seen.add(cache_key)
+        return False
+    
+    def _is_duplicate_message_pattern(self, timestamp: str, input_tokens: int, output_tokens: int, 
+                                     cache_read_tokens: int, cache_creation_tokens: int) -> bool:
+        """Check if an entire message pattern should be deduplicated
+        
+        For cases where the entire message (input + output + cache) is duplicated,
+        typically within a few seconds of each other.
+        """
+        # Use minute-level timestamp + all token counts as deduplication key
+        time_minute = timestamp[:16]  # YYYY-MM-DDTHH:MM  
+        pattern_key = f"{time_minute}_{input_tokens}_{output_tokens}_{cache_read_tokens}_{cache_creation_tokens}"
+        
+        if pattern_key in self.message_patterns_seen:
+            logger.debug(f"Duplicate message pattern detected: {timestamp}")
+            return True
+        
+        self.message_patterns_seen.add(pattern_key)
+        return False
+
     def _process_message(
         self, data: Dict[str, Any], project_stats: ProjectStats, fallback_date: str = "unknown"
     ) -> bool:
@@ -294,6 +356,34 @@ class ClaudeHistoryAnalyzer:
             logger.debug(self.i18n.t('missing_timestamp_info'))
             date_str = fallback_date
 
+        # Apply deduplication logic to avoid counting duplicate API responses
+        # Check for completely duplicate messages first
+        if self._is_duplicate_message_pattern(timestamp_str, input_tokens, output_tokens, 
+                                            cache_read_tokens, cache_creation_tokens):
+            logger.debug(f"Skipping duplicate message: {timestamp_str}")
+            return False
+        
+        # Apply cache-specific deduplication
+        original_cache_creation = cache_creation_tokens
+        original_cache_read = cache_read_tokens
+        should_count_as_message = True  # Track if this should count as a unique message
+        
+        if self._is_duplicate_cache_creation(timestamp_str, cache_creation_tokens):
+            cache_creation_tokens = 0  # Don't count duplicate cache creation
+            should_count_as_message = False  # Don't count as unique message
+            
+        if self._is_duplicate_cache_read(timestamp_str, cache_read_tokens):
+            cache_read_tokens = 0  # Don't count duplicate cache reads
+            should_count_as_message = False  # Don't count as unique message
+        
+        # Log deduplication actions for debugging
+        if original_cache_creation > 0 and cache_creation_tokens == 0:
+            logger.debug(f"Deduplicated cache creation: {original_cache_creation:,} tokens at {timestamp_str}")
+        if original_cache_read > 0 and cache_read_tokens == 0:
+            logger.debug(f"Deduplicated cache read: {original_cache_read:,} tokens at {timestamp_str}")
+        if not should_count_as_message:
+            logger.debug(f"Message not counted due to cache deduplication: {timestamp_str}")
+
         # Calculate cost using model-specific pricing
         try:
             message_cost = calculate_model_cost(
@@ -315,14 +405,17 @@ class ClaudeHistoryAnalyzer:
         project_stats.total_output_tokens += output_tokens
         project_stats.total_cache_read_tokens += cache_read_tokens
         project_stats.total_cache_creation_tokens += cache_creation_tokens
-        project_stats.total_messages += 1
+        if should_count_as_message:
+            project_stats.total_messages += 1
         project_stats.total_cost += message_cost  # Cost is in USD
 
         # Track which models are used by this project
         if model_name in project_stats.models_used:
-            project_stats.models_used[model_name] += 1
+            if should_count_as_message:
+                project_stats.models_used[model_name] += 1
         else:
-            project_stats.models_used[model_name] = 1
+            if should_count_as_message:
+                project_stats.models_used[model_name] = 1
 
         # Track date range of project activity
         if date_str != "unknown":
@@ -340,14 +433,17 @@ class ClaudeHistoryAnalyzer:
         daily_stats.total_output_tokens += output_tokens
         daily_stats.total_cache_read_tokens += cache_read_tokens
         daily_stats.total_cache_creation_tokens += cache_creation_tokens
-        daily_stats.total_messages += 1
+        if should_count_as_message:
+            daily_stats.total_messages += 1
         daily_stats.total_cost += message_cost  # Cost is in USD
 
         # Track daily model usage
         if model_name in daily_stats.models_used:
-            daily_stats.models_used[model_name] += 1
+            if should_count_as_message:
+                daily_stats.models_used[model_name] += 1
         else:
-            daily_stats.models_used[model_name] = 1
+            if should_count_as_message:
+                daily_stats.models_used[model_name] = 1
 
         # Update per-project breakdown within daily stats
         if project_stats.project_name not in daily_stats.project_breakdown:
@@ -360,13 +456,16 @@ class ClaudeHistoryAnalyzer:
         daily_project_stats.total_output_tokens += output_tokens
         daily_project_stats.total_cache_read_tokens += cache_read_tokens
         daily_project_stats.total_cache_creation_tokens += cache_creation_tokens
-        daily_project_stats.total_messages += 1
+        if should_count_as_message:
+            daily_project_stats.total_messages += 1
         daily_project_stats.total_cost += message_cost  # Cost is in USD
 
         if model_name in daily_project_stats.models_used:
-            daily_project_stats.models_used[model_name] += 1
+            if should_count_as_message:
+                daily_project_stats.models_used[model_name] += 1
         else:
-            daily_project_stats.models_used[model_name] = 1
+            if should_count_as_message:
+                daily_project_stats.models_used[model_name] = 1
 
         # Update global model statistics across all projects
         if model_name not in self.model_stats:
@@ -377,7 +476,8 @@ class ClaudeHistoryAnalyzer:
         model_stats.total_output_tokens += output_tokens
         model_stats.total_cache_read_tokens += cache_read_tokens
         model_stats.total_cache_creation_tokens += cache_creation_tokens
-        model_stats.total_messages += 1
+        if should_count_as_message:
+            model_stats.total_messages += 1
         model_stats.total_cost += message_cost
 
         return True

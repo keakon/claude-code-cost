@@ -1,6 +1,6 @@
 [project]
 name = "claude-code-cost"
-version = "1.0.0"
+version = "1.1.0"
 description = "Claude Code Cost Calculator - Analyze token usage and costs from Claude Code history"
 authors = [
     {name = "keakon"}

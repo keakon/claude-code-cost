@@ -9,6 +9,7 @@ English | [中文](README_CN.md)
 ## Features
 
 - **Multi-model Support**: Claude Sonnet, Opus, Gemini models with accurate pricing
+- **Advanced Deduplication**: Intelligent duplicate detection removes repeated API responses from streaming/retry mechanisms
 - **Comprehensive Analytics**: Daily usage trends, project rankings, model performance, and cost breakdowns  
 - **Smart Display**: Automatically hides empty sections and optimizes long project paths
 - **Model Insights**: Individual model consumption tracking with cost ranking (shown when using 2+ models)
