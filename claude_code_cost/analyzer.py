@@ -362,23 +362,18 @@ class ClaudeHistoryAnalyzer:
         if message_id in self._message_accumulator:
             # This is a streaming continuation - accumulate output tokens
             prev_data = self._message_accumulator[message_id]
-            # Input and cache tokens should be the same across segments, use the latest
-            # Output tokens should be accumulated
+
+            # ONLY accumulate output_tokens.
             accumulated_output = prev_data["output_tokens"] + output_tokens
 
             logger.debug(
                 f"Streaming continuation for {message_id}: output {prev_data['output_tokens']} + {output_tokens} = {accumulated_output}"
             )
 
-            self._message_accumulator[message_id] = {
-                "input_tokens": input_tokens,  # Use latest input tokens
-                "output_tokens": accumulated_output,  # Accumulate output
-                "cache_read_tokens": cache_read_tokens,  # Use latest cache read
-                "cache_creation_tokens": cache_creation_tokens,  # Use latest cache creation
-                "timestamp": timestamp,
-                "is_new_message": is_new_message,
-            }
-            # Don't bill yet - wait for final segment
+            # Update the accumulator with the new output total, but keep original input/cache values.
+            self._message_accumulator[message_id]["output_tokens"] = accumulated_output
+
+            # Do not bill this segment individually. The total will be billed during finalization.
             return (0, 0, 0, 0, False, is_new_message)
         else:
             # First segment of this message
