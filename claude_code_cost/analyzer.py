@@ -15,8 +15,8 @@ from rich.console import Console
 from rich.table import Table
 
 from .billing import calculate_model_cost, load_currency_config, load_model_pricing
-from .models import DailyStats, ModelStats, ProjectStats
 from .i18n import get_i18n
+from .models import DailyStats, ModelStats, ProjectStats
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -43,23 +43,47 @@ class ClaudeHistoryAnalyzer:
         self.currency_config = currency_config or load_currency_config()
         self.model_config_cache: Dict[str, Dict] = {}  # Cache for model configuration lookups
         self.i18n = get_i18n(language)
-        
-        # Deduplication tracking for repeated API responses
-        self.cache_creation_seen: set = set()  # Track seen cache creation patterns
-        self.cache_read_seen: set = set()      # Track seen cache read patterns
-        self.message_patterns_seen: set = set()  # Track seen input/output patterns
+
+        # Validate and fix currency configuration
+        self._validate_and_fix_currency_config()
+
+        # Initialize a dict to accumulate tokens for streaming responses
+        self._message_accumulator = {}  # message_id -> accumulated tokens
+        self._counted_message_ids = set()  # Track which message IDs we've already counted for messages
+        self._billed_message_ids = set()  # Track which message IDs we've already billed across all files
+        self._session_continuation_mode = False  # Track if current file is in session continuation mode
+
+    def _validate_and_fix_currency_config(self) -> None:
+        """Validate currency configuration and apply default fallbacks if needed"""
+        if not isinstance(self.currency_config, dict):
+            logger.warning("Invalid currency config format, using defaults")
+            self.currency_config = {"usd_to_cny": DEFAULT_USD_TO_CNY, "display_unit": "USD"}
+            return
+
+        # Validate and fix exchange rate
+        usd_to_cny = self.currency_config.get("usd_to_cny", DEFAULT_USD_TO_CNY)
+        if not isinstance(usd_to_cny, (int, float)) or usd_to_cny <= 0:
+            logger.warning(f"Invalid USD to CNY rate: {usd_to_cny}, using default: {DEFAULT_USD_TO_CNY}")
+            self.currency_config["usd_to_cny"] = DEFAULT_USD_TO_CNY
+
+        # Validate display unit
+        display_unit = self.currency_config.get("display_unit", "USD")
+        if display_unit not in ["USD", "CNY"]:
+            logger.warning(f"Invalid display unit: {display_unit}, using USD")
+            self.currency_config["display_unit"] = "USD"
 
     def _convert_currency(self, amount: float) -> float:
         """Convert amount to display currency based on configuration"""
         if self.currency_config.get("display_unit", "USD") == "CNY":
-            return amount * self.currency_config.get("usd_to_cny", DEFAULT_USD_TO_CNY)
+            # Use pre-validated exchange rate from initialization
+            return amount * self.currency_config["usd_to_cny"]
         return amount
 
     def _format_cost(self, cost: float) -> str:
         """Format cost for display with appropriate currency symbol"""
         converted_cost = self._convert_currency(cost)
         display_unit = self.currency_config.get("display_unit", "USD")
-        
+
         # Use ASCII-compatible currency symbols on Windows to avoid encoding issues
         if platform.system() == "Windows":
             currency_symbol = "CNY" if display_unit == "CNY" else "USD"
@@ -70,21 +94,21 @@ class ClaudeHistoryAnalyzer:
 
     def analyze_directory(self, base_dir: Path) -> None:
         """Analyze all JSONL files in Claude projects directory structure
-        
+
         Scans for project directories (starting with '-') and processes JSONL files
         containing Claude conversation history to extract token usage and costs.
         """
         if not base_dir.exists():
-            logger.error(self.i18n.t('directory_not_exist', path=base_dir))
+            logger.error(self.i18n.t("directory_not_exist", path=base_dir))
             return
 
-        logger.info(self.i18n.t('analysis_start', path=base_dir))
+        logger.info(self.i18n.t("analysis_start", path=base_dir))
 
         # Find project directories (Claude stores projects in dirs starting with '-')
         project_dirs = [d for d in base_dir.iterdir() if d.is_dir() and d.name.startswith("-")]
 
         if not project_dirs:
-            logger.warning(self.i18n.t('no_project_dirs', path=base_dir))
+            logger.warning(self.i18n.t("no_project_dirs", path=base_dir))
             return
 
         total_files = 0
@@ -98,15 +122,17 @@ class ClaudeHistoryAnalyzer:
             total_files += files_processed
             total_messages += messages_processed
 
-        logger.info(self.i18n.t('analysis_complete', projects=len(project_dirs), files=total_files, messages=total_messages))
+        logger.info(
+            self.i18n.t("analysis_complete", projects=len(project_dirs), files=total_files, messages=total_messages)
+        )
 
         # Validate analysis results and log summary
         if not self.project_stats:
-            logger.warning(self.i18n.t('no_data_found'))
+            logger.warning(self.i18n.t("no_data_found"))
         elif total_messages == 0:
-            logger.warning(self.i18n.t('no_messages_found'))
+            logger.warning(self.i18n.t("no_messages_found"))
         else:
-            logger.info(self.i18n.t('projects_analyzed', count=len(self.project_stats)))
+            logger.info(self.i18n.t("projects_analyzed", count=len(self.project_stats)))
 
         # Set active project count for daily statistics
         for daily_stats in self.daily_stats.values():
@@ -114,9 +140,9 @@ class ClaudeHistoryAnalyzer:
 
     def _extract_project_name_from_dir(self, dir_name: str) -> str:
         """Extract readable project name from Claude's directory naming scheme
-        
-        Claude uses directory names like '-Users-username-Workspace-projectname'
-        This method extracts meaningful project names for display.
+
+        Claude uses directory names like '-Users-username-path-to-projectname'
+        This method extracts meaningful project names for display from various directory structures.
         """
         # Special handling for claude projects directory
         if "claude" in dir_name.lower() and "projects" in dir_name.lower():
@@ -133,40 +159,84 @@ class ClaudeHistoryAnalyzer:
                             data = json.loads(first_line)
                             if "cwd" in data:
                                 cwd_path = data["cwd"]
-                                # Use the actual project directory name from file
-                                project_name = Path(cwd_path).name
-                                if project_name:
-                                    return project_name
-                except (json.JSONDecodeError, IOError, KeyError):
+                                # Extract meaningful project path from the actual working directory
+                                path = Path(cwd_path)
+
+                                # Try to find a reasonable project path representation
+                                # Look for common patterns like parent/child for better display
+                                if len(path.parts) >= 2:
+                                    # If the path is deep, show parent/current for context
+                                    parent = path.parent.name
+                                    current = path.name
+
+                                    # Avoid showing generic parent names like "Users", "home", etc.
+                                    if parent.lower() not in ["users", "home", "documents", "desktop"]:
+                                        return f"{parent}/{current}"
+                                    else:
+                                        return current
+                                else:
+                                    return path.name
+                except (json.JSONDecodeError, UnicodeDecodeError, IOError, OSError):
+                    logger.exception(self.i18n.t("file_processing_error", path=jsonl_file))
                     continue
 
         # Fallback: Parse directory name using Claude's naming convention
-        # Directory name format is usually -Users-username-Workspace-projectname
-        # Extract project name from path segments
-        if "-Workspace-" in dir_name:
-            project_name = dir_name.split("-Workspace-", 1)[1]
-            # Handle edge cases with empty or generic names
-            if not project_name or project_name in ["", "-----", "------"]:
-                return "Workspace"
+        # Directory names are typically like: -Users-username-path-to-project-name
+        # We want to extract the meaningful project path
 
-            # Shorten long paths while keeping the final directory visible
-            # Example: "project-subdir-subdir2-final" -> "project/.../final"
-            path_parts = project_name.replace("-", "/").split("/")
-            if len(path_parts) > 3:
-                return f"{path_parts[0]}/.../{path_parts[-1]}"
+        # Remove leading dash and split by dashes
+        clean_name = dir_name.lstrip("-")
+        parts = clean_name.split("-")
+
+        # If we have enough parts, try to find a meaningful project path
+        if len(parts) >= 3:
+            # Skip the first few parts that are likely system paths (Users, username)
+            # Look for common development directory indicators
+            dev_indicators = ["workspace", "projects", "code", "dev", "repos", "src", "git", "documents"]
+            project_start_idx = 2  # Default: skip Users and username
+
+            # Try to find a better starting point based on common dev directory names
+            for i, part in enumerate(parts):
+                if part.lower() in dev_indicators and i < len(parts) - 1:
+                    project_start_idx = i + 1
+                    break
+
+            # Extract the project path starting from the identified index
+            project_parts = parts[project_start_idx:]
+
+            if project_parts:
+                # For long paths, abbreviate to keep display manageable
+                if len(project_parts) > 3:
+                    # Take first and last parts with abbreviation
+                    first = project_parts[0]
+                    last = project_parts[-1]
+                    return f"{first}/.../{last}"
+                elif len(project_parts) == 2:
+                    # For two parts, show as directory/project
+                    return "/".join(project_parts)
+                else:
+                    # Single part or short path, join with dashes
+                    return "-".join(project_parts)
+
+        # If we have fewer parts or can't parse meaningfully, use the last few parts
+        if len(parts) >= 2:
+            # Take the last 1-2 parts as project name
+            if len(parts) == 2:
+                # For two parts, if they look like "my-app", keep both
+                if len(parts[0]) <= 3 and len(parts[1]) <= 10:
+                    return "-".join(parts)
+                else:
+                    return parts[-1]
             else:
-                return project_name.replace("-", "/")
+                # For the last two parts, preserve them as-is with dash
+                return "-".join(parts[-2:])
 
-        # Alternative parsing for non-Workspace paths
-        parts = dir_name.split("-")
-        if len(parts) >= 3:  # -Users-username-...
-            path_parts = parts[3:] if len(parts) > 3 else [parts[2]]
-            if len(path_parts) > 3:
-                return f"{path_parts[0]}/.../{path_parts[-1]}"
-            else:
-                return "/".join(path_parts)
+        # Single part case
+        if len(parts) == 1:
+            return parts[0]
 
-        return dir_name.lstrip("-")
+        # Final fallback: use the cleaned directory name
+        return clean_name if clean_name else dir_name
 
     def _analyze_single_directory(self, directory: Path, project_name: str) -> Tuple[int, int]:
         """Analyze JSONL files in a single directory"""
@@ -188,14 +258,17 @@ class ClaudeHistoryAnalyzer:
                 messages_processed += file_messages
                 files_processed += 1
             except Exception:
-                logger.exception(self.i18n.t('file_processing_error', path=jsonl_file))
+                logger.exception(self.i18n.t("file_processing_error", path=jsonl_file))
                 continue
+
+        # Finalize any remaining streaming messages for this project
+        self._finalize_streaming_messages()
 
         return files_processed, messages_processed
 
     def _process_jsonl_file(self, file_path: Path, project_stats: ProjectStats) -> int:
         """Process a single JSONL file containing Claude conversation history
-        
+
         Each line in the JSONL file represents one message in the conversation.
         We extract token usage and cost information from assistant messages.
         """
@@ -207,8 +280,12 @@ class ClaudeHistoryAnalyzer:
             file_creation_time = datetime.fromtimestamp(file_stat.st_ctime)
             fallback_date = file_creation_time.strftime("%Y-%m-%d")
         except Exception:
-            logger.exception(self.i18n.t('file_creation_time_error', path=file_path))
+            logger.exception(self.i18n.t("file_creation_time_error", path=file_path))
             fallback_date = "unknown"
+
+        # Clear accumulators at the start of each file to ensure file-level isolation
+        self._message_accumulator.clear()
+        # Note: Don't clear _counted_message_ids as we want to track unique messages across files
 
         try:
             with open(file_path, "r", encoding="utf-8") as f:
@@ -221,15 +298,15 @@ class ClaudeHistoryAnalyzer:
                         data = json.loads(line)
                         if self._process_message(data, project_stats, fallback_date):
                             messages_processed += 1
-                    except Exception:
-                        logger.exception(self.i18n.t('message_processing_error', path=file_path, line=line_number))
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        logger.exception(self.i18n.t("message_processing_error", path=file_path, line=line_number))
                         continue
-        except Exception:
-            logger.exception(self.i18n.t('file_read_error', path=file_path))
+        except (IOError, OSError, UnicodeDecodeError):
+            logger.exception(self.i18n.t("file_read_error", path=file_path))
             return 0
 
         if messages_processed > 0:
-            logger.debug(self.i18n.t('file_processed', filename=file_path.name, count=messages_processed))
+            logger.debug(self.i18n.t("file_processed", filename=file_path.name, count=messages_processed))
 
         return messages_processed
 
@@ -241,75 +318,141 @@ class ClaudeHistoryAnalyzer:
             # Convert to local timezone
             local_dt = utc_dt.astimezone()
             return local_dt.strftime("%Y-%m-%d")
-        except Exception:
-            logger.exception(self.i18n.t('timezone_conversion_error', timestamp=utc_timestamp_str))
+        except (ValueError, TypeError):
+            logger.exception(self.i18n.t("timezone_conversion_error", timestamp=utc_timestamp_str))
             return "unknown"
 
-    def _is_duplicate_cache_creation(self, timestamp: str, cache_creation_tokens: int) -> bool:
-        """Check if cache creation tokens should be deduplicated
-        
-        Claude API sometimes reports the same cache creation multiple times
-        for streaming responses. We deduplicate by time window + token count.
+    def _process_streaming_message(
+        self,
+        timestamp: str,
+        input_tokens: int,
+        output_tokens: int,
+        cache_read_tokens: int,
+        cache_creation_tokens: int,
+        message_id: str,
+    ) -> tuple:
+        """Process streaming response with proper deduplication logic
+
+        Implements the "strict session continuation" algorithm:
+        - Cross-file duplicates are skipped completely
+        - Within-file streaming segments are accumulated correctly
+        - Only the final accumulated version is billed
+
+        Returns: (final_input, final_output, final_cache_read, final_cache_creation, should_bill, is_new_message)
         """
-        if cache_creation_tokens <= 0:
-            return False
-        
-        # Use minute-level timestamp + token count as deduplication key
-        time_minute = timestamp[:16]  # YYYY-MM-DDTHH:MM
-        cache_key = f"{time_minute}_{cache_creation_tokens}"
-        
-        if cache_key in self.cache_creation_seen:
-            logger.debug(f"Duplicate cache creation detected: {timestamp} - {cache_creation_tokens:,} tokens")
-            return True
-        
-        self.cache_creation_seen.add(cache_key)
-        return False
-    
-    def _is_duplicate_cache_read(self, timestamp: str, cache_read_tokens: int) -> bool:
-        """Check if cache read tokens should be deduplicated
-        
-        Similar to cache creation, cache reads can be duplicated in streaming responses.
+        if not message_id:
+            return (input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, True, True)
+
+        # Handle session continuation mode: skip all previously billed messages
+        if message_id in self._billed_message_ids:
+            logger.debug(f"Session continuation: skipping already billed message {message_id}")
+            # If we're in session continuation mode and encounter a previously billed message,
+            # stay in continuation mode
+            self._session_continuation_mode = True
+            return (0, 0, 0, 0, False, False)
+        else:
+            # If we encounter a new message, exit session continuation mode
+            if self._session_continuation_mode:
+                logger.debug(f"Exiting session continuation mode at message {message_id}")
+                self._session_continuation_mode = False
+
+        is_new_message = message_id not in self._counted_message_ids
+
+        # Check if this is a streaming segment (same message_id seen before in this file)
+        if message_id in self._message_accumulator:
+            # This is a streaming continuation - accumulate output tokens
+            prev_data = self._message_accumulator[message_id]
+            # Input and cache tokens should be the same across segments, use the latest
+            # Output tokens should be accumulated
+            accumulated_output = prev_data["output_tokens"] + output_tokens
+
+            logger.debug(
+                f"Streaming continuation for {message_id}: output {prev_data['output_tokens']} + {output_tokens} = {accumulated_output}"
+            )
+
+            self._message_accumulator[message_id] = {
+                "input_tokens": input_tokens,  # Use latest input tokens
+                "output_tokens": accumulated_output,  # Accumulate output
+                "cache_read_tokens": cache_read_tokens,  # Use latest cache read
+                "cache_creation_tokens": cache_creation_tokens,  # Use latest cache creation
+                "timestamp": timestamp,
+                "is_new_message": is_new_message,
+            }
+            # Don't bill yet - wait for final segment
+            return (0, 0, 0, 0, False, is_new_message)
+        else:
+            # First segment of this message
+            self._message_accumulator[message_id] = {
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "cache_read_tokens": cache_read_tokens,
+                "cache_creation_tokens": cache_creation_tokens,
+                "timestamp": timestamp,
+                "is_new_message": is_new_message,
+            }
+
+            # Bill immediately for the first segment
+            final_data = self._message_accumulator[message_id]
+            self._billed_message_ids.add(message_id)
+            self._counted_message_ids.add(message_id)
+
+            return (
+                final_data["input_tokens"],
+                final_data["output_tokens"],
+                final_data["cache_read_tokens"],
+                final_data["cache_creation_tokens"],
+                True,
+                is_new_message,
+            )
+
+    def _finalize_streaming_messages(self) -> None:
+        """Finalize streaming messages by billing any remaining segments
+
+        This handles cases where streaming messages had multiple segments
+        and we need to bill the incremental output tokens.
         """
-        if cache_read_tokens <= 0:
-            return False
-        
-        # Use minute-level timestamp + token count as deduplication key  
-        time_minute = timestamp[:16]  # YYYY-MM-DDTHH:MM
-        cache_key = f"{time_minute}_{cache_read_tokens}"
-        
-        if cache_key in self.cache_read_seen:
-            logger.debug(f"Duplicate cache read detected: {timestamp} - {cache_read_tokens:,} tokens")
-            return True
-        
-        self.cache_read_seen.add(cache_key)
-        return False
-    
-    def _is_duplicate_message_pattern(self, timestamp: str, input_tokens: int, output_tokens: int, 
-                                     cache_read_tokens: int, cache_creation_tokens: int) -> bool:
-        """Check if an entire message pattern should be deduplicated
-        
-        For cases where the entire message (input + output + cache) is duplicated,
-        typically within a few seconds of each other.
+        if not self._message_accumulator:
+            return
+
+        logger.debug(f"Finalizing {len(self._message_accumulator)} accumulated messages")
+
+        # Process any remaining messages that had streaming segments
+        for message_id, acc in self._message_accumulator.items():
+            if message_id not in self._billed_message_ids:
+                # This shouldn't happen with the new logic, but handle it for safety
+                logger.debug(f"Billing final version of {message_id}")
+                self._billed_message_ids.add(message_id)
+                self._counted_message_ids.add(message_id)
+
+        # Clear the accumulator for the next file
+        self._message_accumulator.clear()
+        # Reset session continuation mode for next file
+        self._session_continuation_mode = False
+
+    def _is_duplicate_message(
+        self,
+        timestamp: str,
+        input_tokens: int,
+        output_tokens: int,
+        cache_read_tokens: int,
+        cache_creation_tokens: int,
+        message_id: str | None = None,
+    ) -> bool:
+        """Check if a message should be deduplicated - DEPRECATED
+
+        This method is now replaced by _process_streaming_message for better accuracy.
+        Only used for exact duplicate detection.
         """
-        # Use minute-level timestamp + all token counts as deduplication key
-        time_minute = timestamp[:16]  # YYYY-MM-DDTHH:MM  
-        pattern_key = f"{time_minute}_{input_tokens}_{output_tokens}_{cache_read_tokens}_{cache_creation_tokens}"
-        
-        if pattern_key in self.message_patterns_seen:
-            logger.debug(f"Duplicate message pattern detected: {timestamp}")
-            return True
-        
-        self.message_patterns_seen.add(pattern_key)
-        return False
+        return False  # Disable old deduplication logic
 
     def _process_message(
         self, data: Dict[str, Any], project_stats: ProjectStats, fallback_date: str = "unknown"
     ) -> bool:
         """Process a single message from Claude conversation log
-        
+
         Extracts token usage, calculates costs, and updates statistics.
         Only processes 'assistant' type messages as they contain usage data.
-        
+
         Returns:
             bool: True if message was successfully processed, False otherwise
         """
@@ -319,12 +462,12 @@ class ClaudeHistoryAnalyzer:
 
         message = data.get("message", {})
         if not message:
-            logger.debug(self.i18n.t('empty_message_data'))
+            logger.debug(self.i18n.t("empty_message_data"))
             return False
 
         usage = message.get("usage", {})
         if not usage:
-            logger.debug(self.i18n.t('missing_usage_info'))
+            logger.debug(self.i18n.t("missing_usage_info"))
             return False
 
         # Parse token counts from usage field
@@ -334,7 +477,7 @@ class ClaudeHistoryAnalyzer:
             cache_read_tokens = int(usage.get("cache_read_input_tokens") or 0)
             cache_creation_tokens = int(usage.get("cache_creation_input_tokens") or 0)
         except (ValueError, TypeError):
-            logger.warning(self.i18n.t('token_format_error'), exc_info=True)
+            logger.warning(self.i18n.t("token_format_error"), exc_info=True)
             return False
 
         if input_tokens == 0 and output_tokens == 0:
@@ -343,48 +486,61 @@ class ClaudeHistoryAnalyzer:
         # Get model identifier for cost calculation
         model_name = message.get("model", "unknown")
         if not model_name or model_name == "unknown":
-            logger.debug(self.i18n.t('missing_model_info'))
+            logger.debug(self.i18n.t("missing_model_info"))
+
+        # Get message ID for streaming response handling
+        message_id = message.get("id", "")
 
         # Convert UTC timestamp to local date, use file date as fallback
         timestamp_str = data.get("timestamp", "")
         if timestamp_str:
             date_str = self._convert_utc_to_local(timestamp_str)
             if date_str == "unknown" and fallback_date != "unknown":
-                logger.debug(self.i18n.t('using_file_creation_time', date=fallback_date))
+                logger.debug(self.i18n.t("using_file_creation_time", date=fallback_date))
                 date_str = fallback_date
         else:
-            logger.debug(self.i18n.t('missing_timestamp_info'))
+            logger.debug(self.i18n.t("missing_timestamp_info"))
             date_str = fallback_date
 
-        # Apply deduplication logic to avoid counting duplicate API responses
-        # Check for completely duplicate messages first
-        if self._is_duplicate_message_pattern(timestamp_str, input_tokens, output_tokens, 
-                                            cache_read_tokens, cache_creation_tokens):
-            logger.debug(f"Skipping duplicate message: {timestamp_str}")
-            return False
-        
-        # Apply cache-specific deduplication
-        original_cache_creation = cache_creation_tokens
-        original_cache_read = cache_read_tokens
-        should_count_as_message = True  # Track if this should count as a unique message
-        
-        if self._is_duplicate_cache_creation(timestamp_str, cache_creation_tokens):
-            cache_creation_tokens = 0  # Don't count duplicate cache creation
-            should_count_as_message = False  # Don't count as unique message
-            
-        if self._is_duplicate_cache_read(timestamp_str, cache_read_tokens):
-            cache_read_tokens = 0  # Don't count duplicate cache reads
-            should_count_as_message = False  # Don't count as unique message
-        
-        # Log deduplication actions for debugging
-        if original_cache_creation > 0 and cache_creation_tokens == 0:
-            logger.debug(f"Deduplicated cache creation: {original_cache_creation:,} tokens at {timestamp_str}")
-        if original_cache_read > 0 and cache_read_tokens == 0:
-            logger.debug(f"Deduplicated cache read: {original_cache_read:,} tokens at {timestamp_str}")
-        if not should_count_as_message:
-            logger.debug(f"Message not counted due to cache deduplication: {timestamp_str}")
+        # Process streaming response with proper deduplication
+        final_input, final_output, final_cache_read, final_cache_creation, should_bill, is_new_message = (
+            self._process_streaming_message(
+                timestamp_str,
+                input_tokens,
+                output_tokens,
+                cache_read_tokens,
+                cache_creation_tokens,
+                message_id,
+            )
+        )
 
-        # Calculate cost using model-specific pricing
+        # Only update stats if we should bill this message
+        if should_bill:
+            self._update_stats(
+                final_input,
+                final_output,
+                final_cache_read,
+                final_cache_creation,
+                model_name,
+                project_stats,
+                date_str,
+                is_new_message,
+            )
+
+        return should_bill
+
+    def _update_stats(
+        self,
+        input_tokens: int,
+        output_tokens: int,
+        cache_read_tokens: int,
+        cache_creation_tokens: int,
+        model_name: str,
+        project_stats: ProjectStats,
+        date_str: str,
+        is_new_message: bool,
+    ):
+        """A dedicated method to update all statistical counters."""
         try:
             message_cost = calculate_model_cost(
                 model_name,
@@ -397,97 +553,65 @@ class ClaudeHistoryAnalyzer:
                 self.currency_config,
             )
         except Exception:
-            logger.exception(self.i18n.t('cost_calculation_error'))
+            logger.exception(self.i18n.t("cost_calculation_error"))
             message_cost = 0.0
 
-        # Update project-level statistics
+        # Update project-level stats
         project_stats.total_input_tokens += input_tokens
         project_stats.total_output_tokens += output_tokens
         project_stats.total_cache_read_tokens += cache_read_tokens
         project_stats.total_cache_creation_tokens += cache_creation_tokens
-        if should_count_as_message:
+        project_stats.total_cost += message_cost
+        if is_new_message:
             project_stats.total_messages += 1
-        project_stats.total_cost += message_cost  # Cost is in USD
+            project_stats.models_used[model_name] = project_stats.models_used.get(model_name, 0) + 1
 
-        # Track which models are used by this project
-        if model_name in project_stats.models_used:
-            if should_count_as_message:
-                project_stats.models_used[model_name] += 1
-        else:
-            if should_count_as_message:
-                project_stats.models_used[model_name] = 1
-
-        # Track date range of project activity
-        if date_str != "unknown":
-            if not project_stats.first_message_date or date_str < project_stats.first_message_date:
-                project_stats.first_message_date = date_str
-            if not project_stats.last_message_date or date_str > project_stats.last_message_date:
-                project_stats.last_message_date = date_str
-
-        # Update daily aggregated statistics
+        # Update daily stats
         if date_str not in self.daily_stats:
             self.daily_stats[date_str] = DailyStats(date=date_str)
-
         daily_stats = self.daily_stats[date_str]
         daily_stats.total_input_tokens += input_tokens
         daily_stats.total_output_tokens += output_tokens
         daily_stats.total_cache_read_tokens += cache_read_tokens
         daily_stats.total_cache_creation_tokens += cache_creation_tokens
-        if should_count_as_message:
+        daily_stats.total_cost += message_cost
+        if is_new_message:
             daily_stats.total_messages += 1
-        daily_stats.total_cost += message_cost  # Cost is in USD
+            daily_stats.models_used[model_name] = daily_stats.models_used.get(model_name, 0) + 1
 
-        # Track daily model usage
-        if model_name in daily_stats.models_used:
-            if should_count_as_message:
-                daily_stats.models_used[model_name] += 1
-        else:
-            if should_count_as_message:
-                daily_stats.models_used[model_name] = 1
-
-        # Update per-project breakdown within daily stats
+        # Update daily project breakdown
         if project_stats.project_name not in daily_stats.project_breakdown:
             daily_stats.project_breakdown[project_stats.project_name] = ProjectStats(
                 project_name=project_stats.project_name
             )
-
         daily_project_stats = daily_stats.project_breakdown[project_stats.project_name]
         daily_project_stats.total_input_tokens += input_tokens
         daily_project_stats.total_output_tokens += output_tokens
         daily_project_stats.total_cache_read_tokens += cache_read_tokens
         daily_project_stats.total_cache_creation_tokens += cache_creation_tokens
-        if should_count_as_message:
+        daily_project_stats.total_cost += message_cost
+        if is_new_message:
             daily_project_stats.total_messages += 1
-        daily_project_stats.total_cost += message_cost  # Cost is in USD
+            daily_project_stats.models_used[model_name] = daily_project_stats.models_used.get(model_name, 0) + 1
 
-        if model_name in daily_project_stats.models_used:
-            if should_count_as_message:
-                daily_project_stats.models_used[model_name] += 1
-        else:
-            if should_count_as_message:
-                daily_project_stats.models_used[model_name] = 1
-
-        # Update global model statistics across all projects
+        # Update global model stats
         if model_name not in self.model_stats:
             self.model_stats[model_name] = ModelStats(model_name=model_name)
-
         model_stats = self.model_stats[model_name]
         model_stats.total_input_tokens += input_tokens
         model_stats.total_output_tokens += output_tokens
         model_stats.total_cache_read_tokens += cache_read_tokens
         model_stats.total_cache_creation_tokens += cache_creation_tokens
-        if should_count_as_message:
-            model_stats.total_messages += 1
         model_stats.total_cost += message_cost
-
-        return True
+        if is_new_message:
+            model_stats.total_messages += 1
 
     def _generate_rich_report(self, max_days=10, max_projects=10) -> None:
         """Generate formatted terminal report using Rich library
-        
+
         Creates up to 5 sections: overall stats, today's usage, daily trends,
         project rankings, and model comparisons. Intelligently hides empty sections.
-        
+
         Args:
             max_days: Maximum days to show in daily stats (0 = all)
             max_projects: Maximum projects to show in rankings (0 = all)
@@ -508,17 +632,19 @@ class ClaudeHistoryAnalyzer:
         total_messages = sum(p.total_messages for p in valid_projects)
 
         # 1. Overall statistics summary
-        summary_table = Table(title=self.i18n.t('overall_stats'), box=box.ROUNDED, show_header=True, header_style="bold cyan")
-        summary_table.add_column(self.i18n.t('metric'), style="cyan", no_wrap=True, width=20)
-        summary_table.add_column(self.i18n.t('value'), style="yellow", justify="right", width=20)
+        summary_table = Table(
+            title=self.i18n.t("overall_stats"), box=box.ROUNDED, show_header=True, header_style="bold cyan"
+        )
+        summary_table.add_column(self.i18n.t("metric"), style="cyan", no_wrap=True, width=20)
+        summary_table.add_column(self.i18n.t("value"), style="yellow", justify="right", width=20)
 
-        summary_table.add_row(self.i18n.t('valid_projects'), f"{len(valid_projects)}")
-        summary_table.add_row(self.i18n.t('input_tokens'), f"{total_input_tokens/1_000_000:.1f}M")
-        summary_table.add_row(self.i18n.t('output_tokens'), f"{total_output_tokens/1_000_000:.1f}M")
-        summary_table.add_row(self.i18n.t('cache_read'), f"{total_cache_read_tokens/1_000_000:.1f}M")
-        summary_table.add_row(self.i18n.t('cache_write'), f"{total_cache_creation_tokens/1_000_000:.1f}M")
-        summary_table.add_row(self.i18n.t('total_cost'), self._format_cost(total_cost))
-        summary_table.add_row(self.i18n.t('total_messages'), f"{total_messages:,}")
+        summary_table.add_row(self.i18n.t("valid_projects"), f"{len(valid_projects)}")
+        summary_table.add_row(self.i18n.t("input_tokens"), f"{total_input_tokens/1_000_000:.1f}M")
+        summary_table.add_row(self.i18n.t("output_tokens"), f"{total_output_tokens/1_000_000:.1f}M")
+        summary_table.add_row(self.i18n.t("cache_read"), f"{total_cache_read_tokens/1_000_000:.1f}M")
+        summary_table.add_row(self.i18n.t("cache_write"), f"{total_cache_creation_tokens/1_000_000:.1f}M")
+        summary_table.add_row(self.i18n.t("total_cost"), self._format_cost(total_cost))
+        summary_table.add_row(self.i18n.t("total_messages"), f"{total_messages:,}")
 
         console.print("\n")
         console.print(summary_table)
@@ -528,15 +654,18 @@ class ClaudeHistoryAnalyzer:
         today_stats = self.daily_stats.get(today_str)
         if today_stats and today_stats.project_breakdown and today_stats.total_cost > 0:
             today_table = Table(
-                title=f"{self.i18n.t('today_usage')} ({today_str})", box=box.ROUNDED, show_header=True, header_style="bold cyan"
+                title=f"{self.i18n.t('today_usage')} ({today_str})",
+                box=box.ROUNDED,
+                show_header=True,
+                header_style="bold cyan",
             )
-            today_table.add_column(self.i18n.t('project'), style="cyan", no_wrap=False, max_width=35)
-            today_table.add_column(self.i18n.t('input_tokens'), style="bright_blue", justify="right", min_width=8)
-            today_table.add_column(self.i18n.t('output_tokens'), style="yellow", justify="right", min_width=8)
-            today_table.add_column(self.i18n.t('cache_read'), style="magenta", justify="right", min_width=8)
-            today_table.add_column(self.i18n.t('cache_write'), style="bright_magenta", justify="right", min_width=8)
-            today_table.add_column(self.i18n.t('messages'), style="red", justify="right", min_width=6)
-            today_table.add_column(self.i18n.t('cost'), style="green", justify="right", min_width=8)
+            today_table.add_column(self.i18n.t("project"), style="cyan", no_wrap=False, max_width=35)
+            today_table.add_column(self.i18n.t("input_tokens"), style="bright_blue", justify="right", min_width=8)
+            today_table.add_column(self.i18n.t("output_tokens"), style="yellow", justify="right", min_width=8)
+            today_table.add_column(self.i18n.t("cache_read"), style="magenta", justify="right", min_width=8)
+            today_table.add_column(self.i18n.t("cache_write"), style="bright_magenta", justify="right", min_width=8)
+            today_table.add_column(self.i18n.t("messages"), style="red", justify="right", min_width=6)
+            today_table.add_column(self.i18n.t("cost"), style="green", justify="right", min_width=8)
 
             # Rank today's projects by cost to show highest spenders first
             sorted_today_projects = sorted(
@@ -558,7 +687,7 @@ class ClaudeHistoryAnalyzer:
             # Add total row
             today_table.add_section()
             today_table.add_row(
-                self.i18n.t('total'),
+                self.i18n.t("total"),
                 self._format_number(today_stats.total_input_tokens),
                 self._format_number(today_stats.total_output_tokens),
                 self._format_number(today_stats.total_cache_read_tokens),
@@ -578,18 +707,23 @@ class ClaudeHistoryAnalyzer:
         historical_stats = {k: v for k, v in valid_daily_stats.items() if k != today_str}
 
         if historical_stats:
-            title_suffix = f"({self.i18n.t('recent_days', days=max_days)})" if max_days > 0 else f"({self.i18n.t('all_data')})"
-            daily_table = Table(
-                title=f"{self.i18n.t('daily_stats')} {title_suffix}", box=box.ROUNDED, show_header=True, header_style="bold cyan"
+            title_suffix = (
+                f"({self.i18n.t('recent_days', days=max_days)})" if max_days > 0 else f"({self.i18n.t('all_data')})"
             )
-            daily_table.add_column(self.i18n.t('date'), style="cyan", justify="center", min_width=10)
-            daily_table.add_column(self.i18n.t('input_tokens'), style="bright_blue", justify="right", min_width=8)
-            daily_table.add_column(self.i18n.t('output_tokens'), style="yellow", justify="right", min_width=8)
-            daily_table.add_column(self.i18n.t('cache_read'), style="magenta", justify="right", min_width=8)
-            daily_table.add_column(self.i18n.t('cache_write'), style="bright_magenta", justify="right", min_width=8)
-            daily_table.add_column(self.i18n.t('messages'), style="red", justify="right", min_width=6)
-            daily_table.add_column(self.i18n.t('cost'), style="green", justify="right", min_width=8)
-            daily_table.add_column(self.i18n.t('active_projects'), style="orange3", justify="right", min_width=8)
+            daily_table = Table(
+                title=f"{self.i18n.t('daily_stats')} {title_suffix}",
+                box=box.ROUNDED,
+                show_header=True,
+                header_style="bold cyan",
+            )
+            daily_table.add_column(self.i18n.t("date"), style="cyan", justify="center", min_width=10)
+            daily_table.add_column(self.i18n.t("input_tokens"), style="bright_blue", justify="right", min_width=8)
+            daily_table.add_column(self.i18n.t("output_tokens"), style="yellow", justify="right", min_width=8)
+            daily_table.add_column(self.i18n.t("cache_read"), style="magenta", justify="right", min_width=8)
+            daily_table.add_column(self.i18n.t("cache_write"), style="bright_magenta", justify="right", min_width=8)
+            daily_table.add_column(self.i18n.t("messages"), style="red", justify="right", min_width=6)
+            daily_table.add_column(self.i18n.t("cost"), style="green", justify="right", min_width=8)
+            daily_table.add_column(self.i18n.t("active_projects"), style="orange3", justify="right", min_width=8)
 
             # Generate date range for display
             today = date.today()
@@ -622,17 +756,22 @@ class ClaudeHistoryAnalyzer:
         # Show project rankings (always shown if we have valid projects)
         valid_projects = [p for p in self.project_stats.values() if p.total_tokens > 0]
         if valid_projects:
-            title_suffix = f"({self.i18n.t('top_n', n=max_projects)})" if max_projects > 0 else f"({self.i18n.t('all_data')})"
-            projects_table = Table(
-                title=f"{self.i18n.t('project_stats')} {title_suffix}", box=box.ROUNDED, show_header=True, header_style="bold cyan"
+            title_suffix = (
+                f"({self.i18n.t('top_n', n=max_projects)})" if max_projects > 0 else f"({self.i18n.t('all_data')})"
             )
-            projects_table.add_column(self.i18n.t('project'), style="cyan", no_wrap=False, max_width=35)
-            projects_table.add_column(self.i18n.t('input_tokens'), style="bright_blue", justify="right", min_width=8)
-            projects_table.add_column(self.i18n.t('output_tokens'), style="yellow", justify="right", min_width=8)
-            projects_table.add_column(self.i18n.t('cache_read'), style="magenta", justify="right", min_width=8)
-            projects_table.add_column(self.i18n.t('cache_write'), style="bright_magenta", justify="right", min_width=8)
-            projects_table.add_column(self.i18n.t('messages'), style="red", justify="right", min_width=6)
-            projects_table.add_column(self.i18n.t('cost'), style="green", justify="right", min_width=8)
+            projects_table = Table(
+                title=f"{self.i18n.t('project_stats')} {title_suffix}",
+                box=box.ROUNDED,
+                show_header=True,
+                header_style="bold cyan",
+            )
+            projects_table.add_column(self.i18n.t("project"), style="cyan", no_wrap=False, max_width=35)
+            projects_table.add_column(self.i18n.t("input_tokens"), style="bright_blue", justify="right", min_width=8)
+            projects_table.add_column(self.i18n.t("output_tokens"), style="yellow", justify="right", min_width=8)
+            projects_table.add_column(self.i18n.t("cache_read"), style="magenta", justify="right", min_width=8)
+            projects_table.add_column(self.i18n.t("cache_write"), style="bright_magenta", justify="right", min_width=8)
+            projects_table.add_column(self.i18n.t("messages"), style="red", justify="right", min_width=6)
+            projects_table.add_column(self.i18n.t("cost"), style="green", justify="right", min_width=8)
 
             # Rank projects by total cost
             sorted_projects = sorted(valid_projects, key=lambda x: x.total_cost, reverse=True)
@@ -658,15 +797,15 @@ class ClaudeHistoryAnalyzer:
         valid_models = [m for m in self.model_stats.values() if m.total_tokens > 0]
         if len(valid_models) >= 2:
             models_table = Table(
-                title=self.i18n.t('model_stats'), box=box.ROUNDED, show_header=True, header_style="bold cyan"
+                title=self.i18n.t("model_stats"), box=box.ROUNDED, show_header=True, header_style="bold cyan"
             )
-            models_table.add_column(self.i18n.t('model'), style="cyan", no_wrap=False, max_width=35)
-            models_table.add_column(self.i18n.t('input_tokens'), style="bright_blue", justify="right", min_width=8)
-            models_table.add_column(self.i18n.t('output_tokens'), style="yellow", justify="right", min_width=8)
-            models_table.add_column(self.i18n.t('cache_read'), style="magenta", justify="right", min_width=8)
-            models_table.add_column(self.i18n.t('cache_write'), style="bright_magenta", justify="right", min_width=8)
-            models_table.add_column(self.i18n.t('messages'), style="red", justify="right", min_width=6)
-            models_table.add_column(self.i18n.t('cost'), style="green", justify="right", min_width=8)
+            models_table.add_column(self.i18n.t("model"), style="cyan", no_wrap=False, max_width=35)
+            models_table.add_column(self.i18n.t("input_tokens"), style="bright_blue", justify="right", min_width=8)
+            models_table.add_column(self.i18n.t("output_tokens"), style="yellow", justify="right", min_width=8)
+            models_table.add_column(self.i18n.t("cache_read"), style="magenta", justify="right", min_width=8)
+            models_table.add_column(self.i18n.t("cache_write"), style="bright_magenta", justify="right", min_width=8)
+            models_table.add_column(self.i18n.t("messages"), style="red", justify="right", min_width=6)
+            models_table.add_column(self.i18n.t("cost"), style="green", justify="right", min_width=8)
 
             # Rank models by total cost
             sorted_models = sorted(valid_models, key=lambda x: x.total_cost, reverse=True)
@@ -772,4 +911,4 @@ class ClaudeHistoryAnalyzer:
         with open(output_path, "w", encoding="utf-8") as f:
             json.dump(export_data, f, ensure_ascii=False, indent=2)
 
-        logger.info(self.i18n.t('json_exported', path=output_path))
+        logger.info(self.i18n.t("json_exported", path=output_path))

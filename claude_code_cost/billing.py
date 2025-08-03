@@ -90,7 +90,7 @@ def load_full_config(config_file: str = "model_pricing.yaml") -> Dict:
         if files is not None:
             try:
                 # Python 3.9+ or has importlib_resources
-                package_files = files("claude-cost") if __package__ else files(__name__.split(".")[0])
+                package_files = files("claude_code_cost") if __package__ else files(__name__.split(".")[0])
                 config_data = (package_files / config_file).read_text(encoding="utf-8")
                 if config_file.endswith(".yaml") or config_file.endswith(".yml"):
                     user_config = yaml.safe_load(config_data)
@@ -197,10 +197,12 @@ def calculate_model_cost(
                 break
 
         # 2. Try substring match (for model variants like 'claude-3-sonnet')
+        # Sort by length in descending order to prioritize longer, more specific names
         if not model_config:
-            for config_key, config_value in pricing_config.items():
+            sorted_keys = sorted(pricing_config.keys(), key=len, reverse=True)
+            for config_key in sorted_keys:
                 if config_key.lower() in model_name.lower():
-                    model_config = config_value
+                    model_config = pricing_config[config_key]
                     break
 
         # 3. No matching config found - this model is free or unsupported
