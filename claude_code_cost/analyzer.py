@@ -429,22 +429,6 @@ class ClaudeHistoryAnalyzer:
         # Reset session continuation mode for next file
         self._session_continuation_mode = False
 
-    def _is_duplicate_message(
-        self,
-        timestamp: str,
-        input_tokens: int,
-        output_tokens: int,
-        cache_read_tokens: int,
-        cache_creation_tokens: int,
-        message_id: str | None = None,
-    ) -> bool:
-        """Check if a message should be deduplicated - DEPRECATED
-
-        This method is now replaced by _process_streaming_message for better accuracy.
-        Only used for exact duplicate detection.
-        """
-        return False  # Disable old deduplication logic
-
     def _process_message(
         self, data: Dict[str, Any], project_stats: ProjectStats, fallback_date: str = "unknown"
     ) -> bool:

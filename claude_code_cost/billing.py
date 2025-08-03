@@ -25,7 +25,7 @@ DEFAULT_USD_TO_CNY = 7.0
 
 
 def get_default_config() -> Dict:
-    """Get built-in default configuration with pricing for all supported models"""
+    """Get built-in default configuration with pricing for core Claude models"""
     return {
         "currency": {"usd_to_cny": 7.0, "display_unit": "USD"},
         "pricing": {
@@ -40,22 +40,6 @@ def get_default_config() -> Dict:
                 "output_per_million": 75.0,
                 "cache_read_per_million": 1.5,
                 "cache_write_per_million": 18.75,
-            },
-            "gemini-2.5-pro": {
-                "tiers": [
-                    {"threshold": 200000, "input_per_million": 1.25, "output_per_million": 10.0},
-                    {"input_per_million": 2.50, "output_per_million": 15.0},
-                ]
-            },
-            "gemini-1.5-pro": {"input_per_million": 1.25, "output_per_million": 5.0},
-            "qwen3-coder": {
-                "currency": "CNY",
-                "tiers": [
-                    {"threshold": 32000, "input_per_million": 4.0, "output_per_million": 16.0},
-                    {"threshold": 128000, "input_per_million": 6.0, "output_per_million": 24.0},
-                    {"threshold": 256000, "input_per_million": 10.0, "output_per_million": 40.0},
-                    {"input_per_million": 20.0, "output_per_million": 200.0},
-                ],
             },
         },
     }

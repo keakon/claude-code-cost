@@ -1,6 +1,6 @@
 """Claude Code Cost Calculator - Analysis tool for Claude Code usage costs"""
 
-__version__ = "1.0.0"
+__version__ = "1.2.0"
 __author__ = "keakon"
 
 from .analyzer import ClaudeHistoryAnalyzer
